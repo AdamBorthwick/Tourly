@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tourly — engine test harness (fake case study)</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.6 system-ui, sans-serif; color: #1a1c22; }
+    section { min-height: 92vh; padding: 8vh 8vw; display: flex; flex-direction: column; justify-content: center; }
+    section h2 { font-size: 34px; margin: 0 0 12px; }
+    #s0 { background: #eef1f7; } #s1 { background: #e7f0ea; } #s2 { background: #f0eae7; }
+    #s3 { background: #e7ecf0; } #s4 { background: #f0e7ef; } #s5 { background: #eceee7; }
+    .tag { font: 600 12px system-ui; letter-spacing: .08em; text-transform: uppercase; color: #6b7280; }
+    .scrolly { position: fixed; top: 8px; left: 8px; background: #111; color: #0f0; font: 12px monospace; padding: 6px 8px; border-radius: 6px; z-index: 2147483647; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="scrolly" id="scrolly">scrollY: 0</div>
+
+  <section id="s0"><span class="tag">Intro</span><h2>Case Study: Project Atlas</h2><p>Scroll is guided while the tour plays. This top area is where the tour begins.</p></section>
+  <section id="s1"><span class="tag">Section 1</span><h2>The Problem</h2><p>Users couldn't find guided context on the page.</p></section>
+  <section id="s2"><span class="tag">Section 2</span><h2>Research</h2><p>We interviewed twelve users and mapped their journeys.</p></section>
+  <section id="s3"><span class="tag">Section 3</span><h2>Design</h2><p>A floating narrated video that scrolls the page for you.</p></section>
+  <section id="s4"><span class="tag">Section 4</span><h2>Build</h2><p>Player.js drives a dead-reckoned clock synced to scroll keyframes.</p></section>
+  <section id="s5"><span class="tag">Section 5</span><h2>Outcome</h2><p>Engagement on case studies went up. The end.</p></section>
+
+  <script src="https://cdn.embed.ly/player-0.1.0.min.js"></script>
+  <script>
+    window.TOURLY_CONFIG = {
+      name: "Atlas Tour (test)",
+      pageUrl: "/test-harness",
+      video: {
+        provider: "vidzflow",
+        embedUrl: "https://app.vidzflow.com/v/YnLsk0eNer?dq=576&ap=false&muted=false&loop=false&ctp=false&bv=false&piv=false&playsinline=true&bc=%234E5FFD&controls=false",
+        videoId: "YnLsk0eNer",
+        duration: null
+      },
+      scrollPoints: [
+        { id:"p1", time: 2,  ease: 0.8, target: { mode:"element", selector:"#s1", viewportAnchor:"top",    offsetPx:0 } },
+        { id:"p2", time: 7,  ease: 0.9, target: { mode:"element", selector:"#s2", viewportAnchor:"center", offsetPx:0 } },
+        { id:"p3", time: 12, ease: 0.9, target: { mode:"element", selector:"#s3", viewportAnchor:"top",    offsetPx:0 } },
+        { id:"p4", time: 17, ease: 0.9, target: { mode:"element", selector:"#s4", viewportAnchor:"center", offsetPx:0 } },
+        { id:"p5", time: 22, ease: 1.0, target: { mode:"element", selector:"#s5", viewportAnchor:"top",    offsetPx:0 } }
+      ],
+      subtitles: [
+        { id:"c1", start: 0.0,  end: 3.5,  text: "Welcome — let me walk you through Project Atlas." },
+        { id:"c2", start: 3.5,  end: 8.0,  text: "First, the core problem users were hitting." },
+        { id:"c3", start: 8.0,  end: 13.0, text: "Here's what our research surfaced." },
+        { id:"c4", start: 13.0, end: 18.0, text: "And the design we landed on." },
+        { id:"c5", start: 18.0, end: 26.0, text: "Finally, the outcome and impact." }
+      ],
+      theme: { video: { radius: 8, width: 320, position: "bottom-right", margin: 24 } },
+      behavior: { scrollLock: true, pauseOnVideoClick: true, startTrigger: "manual" }
+    };
+  </script>
+  <script src="/engine.js"></script>
+  <script>
+    // live scrollY readout for verification
+    setInterval(function(){ document.getElementById('scrolly').textContent = 'scrollY: ' + Math.round(window.scrollY) + ' / max ' + Math.round(document.documentElement.scrollHeight - innerHeight); }, 100);
+  </script>
+</body>
+</html>

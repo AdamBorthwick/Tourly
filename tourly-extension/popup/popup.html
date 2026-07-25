@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 300px; margin: 0; font: 13px/1.45 system-ui, sans-serif; background: #ffffff; color: #1c1e24; }
+    .wrap { padding: 14px; }
+    h1 { font-size: 15px; margin: 0 0 2px; }
+    h1 span { color: #4E5FFD; }
+    p { margin: 0 0 12px; color: #6b7280; }
+    button.primary { width: 100%; background: #4E5FFD; border: 0; color: #fff; border-radius: 8px; padding: 10px; font: 600 13px system-ui; cursor: pointer; }
+    button.primary:hover { background: #3f50ee; }
+    .status { margin-top: 8px; color: #8a90a0; font-size: 12px; min-height: 14px; }
+    .sec { margin-top: 14px; border-top: 1px solid #eef0f3; padding-top: 12px; }
+    .sec h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: #8a90a0; margin: 0 0 8px; }
+    .link { color: #4E5FFD; cursor: pointer; font-size: 12px; }
+    .tours { margin-top: 8px; }
+    .tour { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f0f1f4; border-radius: 4px; }
+    .tour.tour-clickable { cursor: pointer; margin: 0 -4px; padding: 6px 4px; }
+    .tour.tour-clickable:hover { background: #f3f4ff; }
+    .tour b { font-weight: 600; display: block; }
+    .tour small { color: #8a90a0; }
+    .tour .tour-url { color: #4E5FFD; }
+    .muted { color: #8a90a0; font-size: 12px; }
+    .sync-ok { color: #0a7d53; }
+    .sync-err { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Tour<span>ly</span> Editor</h1>
+    <p>Open the timeline editor on the current page to build or edit its tour.</p>
+    <button class="primary" id="open">Open editor on this page</button>
+    <div class="status" id="status"></div>
+
+    <div class="sec">
+      <h2>My tours <span class="link" id="refresh">refresh</span></h2>
+      <div class="tours" id="tours"><span class="muted">Loading…</span></div>
+    </div>
+
+    <div class="sec">
+      <h2>Cloud sync</h2>
+      <div id="syncStatus" class="muted">Checking…</div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

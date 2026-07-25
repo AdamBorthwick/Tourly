@@ -1,0 +1,7 @@
+name = "tourly-cdn"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+# No [routes]/[[route]] section → Cloudflare deploys to the free
+# https://tourly-cdn.<your-subdomain>.workers.dev URL automatically.
+# Once you own a domain, add it in the Cloudflare dashboard and point a
+# route (e.g. cdn.yourdomain.com/*) at this worker — the code doesn't change.

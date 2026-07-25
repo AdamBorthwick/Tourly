@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tourly — editor harness</title>
+  <link rel="stylesheet" href="/tourly-extension/content/editor.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.6 system-ui, sans-serif; color: #1a1c22; padding-bottom: 220px; }
+    section { min-height: 90vh; padding: 8vh 8vw; display: flex; flex-direction: column; justify-content: center; }
+    #s0 { background:#eef1f7; } #s1 { background:#e7f0ea; } #s2 { background:#f0eae7; } #s3 { background:#e7ecf0; } #s4 { background:#f0e7ef; }
+    h2 { font-size: 32px; margin: 0 0 10px; }
+  </style>
+</head>
+<body>
+  <section id="s0"><h2>Intro — Project Atlas</h2><p>Editor test page.</p></section>
+  <section id="s1"><h2>The Problem</h2><p>…</p></section>
+  <section id="s2"><h2>Research</h2><p>…</p></section>
+  <section id="s3"><h2>Design</h2><p>…</p></section>
+  <section id="s4"><h2>Outcome</h2><p>…</p></section>
+
+  <!-- NOTE: no window.TOURLY_CONFIG here → engine does not auto-mount; the editor drives it -->
+  <script src="/tourly-extension/lib/playerjs.min.js"></script>
+  <script src="/engine.js"></script>
+  <script src="/tourly-extension/content/editor.js"></script>
+</body>
+</html>

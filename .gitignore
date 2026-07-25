@@ -1,0 +1,14 @@
+# Supabase credentials (owner fills locally — never commit)
+tourly-extension/supabase-config.js
+
+# Dependencies
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.claude/
+
+# Supabase local dev
+supabase/.temp/
