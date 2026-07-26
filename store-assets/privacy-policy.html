@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tourly — Privacy Policy</title>
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --surface: #ffffff;
+    --text: #1b1e27;
+    --text-muted: #5b6478;
+    --accent: #4e5ffd;
+    --accent-2: #6472ff;
+    --accent-soft: #eef0ff;
+    --rule: #e3e6f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101119;
+      --surface: #171926;
+      --text: #e8e9f2;
+      --text-muted: #9aa0b8;
+      --accent: #8b96ff;
+      --accent-2: #a3adff;
+      --accent-soft: #232748;
+      --rule: #2a2d40;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101119; --surface: #171926; --text: #e8e9f2; --text-muted: #9aa0b8;
+    --accent: #8b96ff; --accent-2: #a3adff; --accent-soft: #232748; --rule: #2a2d40;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7fb; --surface: #ffffff; --text: #1b1e27; --text-muted: #5b6478;
+    --accent: #4e5ffd; --accent-2: #6472ff; --accent-soft: #eef0ff; --rule: #e3e6f0;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 400 17px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 56px 24px 80px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .card-top-rule {
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  }
+  .card-inner { padding: 44px 48px 48px; }
+  @media (max-width: 560px) { .card-inner { padding: 32px 22px 40px; } }
+
+  .lockup { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+  .mark {
+    width: 26px; height: 26px; border-radius: 7px; flex: none;
+    background: linear-gradient(135deg, var(--accent-2), var(--accent));
+    position: relative;
+  }
+  .mark::after {
+    content: ""; position: absolute; top: 50%; left: 51%;
+    transform: translate(-42%, -50%);
+    border-style: solid; border-width: 5px 0 5px 8px;
+    border-color: transparent transparent transparent #fff;
+  }
+  .wordmark { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: var(--text); }
+  .wordmark span { color: var(--accent); }
+
+  h1 {
+    font-size: 32px; font-weight: 700; letter-spacing: -0.02em;
+    margin: 0 0 8px; text-wrap: balance;
+  }
+  .updated { color: var(--text-muted); font-size: 14px; margin: 0 0 28px; }
+  .intro { color: var(--text-muted); margin: 0 0 40px; max-width: 62ch; }
+
+  section { margin-top: 40px; }
+  section:first-of-type { margin-top: 0; }
+  h2 {
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text-muted);
+    margin: 0 0 14px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+  section p, section ul { max-width: 64ch; }
+  section p { margin: 0 0 14px; }
+  section p:last-child { margin-bottom: 0; }
+  ul { padding-left: 20px; margin: 0; }
+  li { margin-bottom: 10px; }
+  li:last-child { margin-bottom: 0; }
+  li strong { font-weight: 600; }
+  code {
+    background: var(--accent-soft); color: var(--accent);
+    padding: 1px 6px; border-radius: 5px; font-size: 14px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .contact {
+    margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--rule);
+    display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  }
+  .contact .label { font-size: 13px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="card">
+    <div class="card-top-rule"></div>
+    <div class="card-inner">
+
+      <div class="lockup">
+        <div class="mark" aria-hidden="true"></div>
+        <div class="wordmark">Tour<span>ly</span></div>
+      </div>
+
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: July 2026</p>
+      <p class="intro">Tourly is a Chrome extension for building guided, scroll-synced video tours
+      for webpages. This page explains what data Tourly collects, how it's used, and who it's
+      shared with.</p>
+
+      <section>
+        <h2>What Tourly collects</h2>
+        <ul>
+          <li><strong>Tour content you create</strong> — the video you reference, scroll-point
+          timing, subtitle text, page element selectors, and styling choices for each tour you
+          build.</li>
+          <li><strong>An anonymous install identifier</strong> — a random ID generated the first
+          time you use Tourly, used only to keep your tours separate from anyone else's. It isn't
+          linked to your name, email, or any other personal information.</li>
+        </ul>
+        <p>Tourly does <strong>not</strong> collect your name, email address, payment details, or
+        browsing history. The extension only activates on a page when you explicitly open it from
+        the toolbar popup — it never runs in the background or observes pages you haven't opened
+        it on.</p>
+      </section>
+
+      <section>
+        <h2>How your data is used</h2>
+        <p>Tour content and your anonymous identifier are sent to Supabase, our database provider,
+        so your tours can be saved and restored across sessions. This data is never sold, and is
+        not used for advertising or shared with data brokers.</p>
+      </section>
+
+      <section>
+        <h2>Third-party services Tourly relies on</h2>
+        <ul>
+          <li><strong>Supabase</strong> — stores tour data, associated with your anonymous install
+          identifier.</li>
+          <li><strong>vidzflow</strong> — the video hosting platform your tours reference; Tourly
+          reads the public embed page for a video you provide to locate its playable file.</li>
+          <li><strong>Cloudflare, jsDelivr, GitHub</strong> — serve the open-source tour-playback
+          script used by tours you export. No personal data is sent to these services.</li>
+          <li><strong>OpenAI (Whisper)</strong> — used only if you click "Auto-generate
+          subtitles." The referenced video's audio is sent to OpenAI to produce a transcript,
+          which becomes your tour's subtitles. This only happens when you explicitly request it.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Data deletion</h2>
+        <p>Clearing the extension's storage (<code>chrome://extensions</code> → Tourly → "Clear
+        data," or removing the extension) discards your local anonymous identity going forward. To
+        request deletion of tours already stored in the cloud, contact us below.</p>
+      </section>
+
+      <section>
+        <h2>Changes to this policy</h2>
+        <p>If this policy changes, the "Last updated" date at the top will change accordingly.</p>
+      </section>
+
+      <div class="contact">
+        <span class="label">Questions about this policy</span>
+        <a href="mailto:adadbort@gmail.com">adadbort@gmail.com</a>
+      </div>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

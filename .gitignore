@@ -1,6 +1,11 @@
 # Supabase credentials (owner fills locally — never commit)
 tourly-extension/supabase-config.js
 
+# Packaged store zip(s) bundle the real supabase-config.js above — never commit.
+# (Versioned release zips are uploaded to GitHub Releases directly, not tracked in git.)
+store-assets/tourly-extension.zip
+store-assets/tourly-extension-v*.zip
+
 # Dependencies
 node_modules/
 

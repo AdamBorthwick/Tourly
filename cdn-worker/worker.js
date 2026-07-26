@@ -5,7 +5,7 @@
 // GitHub repo below). Later, swap the upstream fetch for Cloudflare R2/KV to host the source
 // privately — the public URL never changes, so no customer's already-pasted embed code breaks.
 
-var GH_REPO = 'YOUR-GH-USERNAME/tourly';   // <- set to your GitHub username/repo before deploying
+var GH_REPO = 'AdamBorthwick/Tourly';
 var PINNED_TAG = 'v1';                      // bump + redeploy to roll an engine.js update out to every live tour
 var EDGE_CACHE_SECONDS = 300;               // how fast an update propagates to already-loaded tours
 

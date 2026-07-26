@@ -9,10 +9,11 @@
   if (window.__tourlyEditor) { window.__tourlyEditor.toggle(); return; }
 
   var EDITOR_H = 220;
-  // Placeholder until you deploy cdn-worker/ (see its README) and paste the real URL into
-  // the Export tab. Exports never point straight at jsDelivr — always at this first-party URL,
-  // so the backend can change later without breaking anything already pasted into a site.
-  var DEFAULT_CDN = 'https://tourly-cdn.YOUR-SUBDOMAIN.workers.dev';
+  // The deployed cdn-worker/ URL — baked in so every install (including friends' installs
+  // later) already exports working embeds with nothing to paste. Exports never point straight
+  // at jsDelivr — always at this first-party URL, so the backend can change later (e.g. to
+  // private hosting) without breaking anything already pasted into a site.
+  var DEFAULT_CDN = 'https://tourly-cdn.tourly567.workers.dev';
 
   // A tour's page identity must include the origin, not just the path — otherwise two different
   // sites sharing a path (e.g. two Webflow projects both at "/case-studies/acme") collide, both
@@ -140,6 +141,8 @@
   var draggingHighlight = false;
   var draggingCue = false;
   var lastScrubAt = 0;
+  var playheadScrubLockedUntil = 0;
+  var PLAYHEAD_SCRUB_COOLDOWN_MS = 280;
   var selectedPointId = null;
   var selectedCueId = null;
   var selectedHighlightId = null;
@@ -692,6 +695,8 @@
 
   function startScrub(clientX) {
     if (!engine || !duration || !ED.track) return;
+    var now0 = (performance && performance.now) ? performance.now() : Date.now();
+    if (now0 < playheadScrubLockedUntil) return;
     function seekAt(cx, force) {
       var m = trackScrubMetrics();
       var ratio = m.contentW ? clamp((cx - m.rect.left - m.borderL) / m.contentW, 0, 1) : 0;
@@ -706,6 +711,7 @@
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
       seekAt(ev.clientX, true);
+      playheadScrubLockedUntil = (performance && performance.now ? performance.now() : Date.now()) + PLAYHEAD_SCRUB_COOLDOWN_MS;
     }
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
@@ -2269,6 +2275,21 @@
     }
     ED.banner.textContent = labelForElement(el) + ' · click to select · Esc to cancel';
   }
+  function pickHighlightRadius(el) {
+    var rect = el.getBoundingClientRect();
+    var cs = window.getComputedStyle(el);
+    var tl = parseFloat(cs.borderTopLeftRadius) || 0;
+    var tr = parseFloat(cs.borderTopRightRadius) || 0;
+    var br = parseFloat(cs.borderBottomRightRadius) || 0;
+    var bl = parseFloat(cs.borderBottomLeftRadius) || 0;
+    var maxR = Math.max(0, Math.min(rect.width, rect.height) / 2);
+    var bg = cs.backgroundColor || '';
+    var transparent = !bg || bg === 'transparent' || (bg.indexOf('rgba') >= 0 && parseFloat((bg.match(/[\d.]+\s*\)?$/) || ['1'])[0]) < 0.08);
+    if (transparent && (tl + tr + br + bl) < 1) tl = tr = br = bl = Math.min(8, maxR);
+    tl = Math.min(tl, maxR); tr = Math.min(tr, maxR); br = Math.min(br, maxR); bl = Math.min(bl, maxR);
+    return tl + 'px ' + tr + 'px ' + br + 'px ' + bl + 'px';
+  }
+
   function pickMove(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el || isOwn(el)) {
@@ -2277,7 +2298,37 @@
       return;
     }
     var r = el.getBoundingClientRect();
-    Object.assign(ED.pickOverlay.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    var isHi = pickContext && pickContext.type === 'highlight';
+    if (isHi) {
+      var pad = 3;
+      Object.assign(ED.pickOverlay.style, {
+        display: 'block',
+        left: (r.left - pad) + 'px',
+        top: (r.top - pad) + 'px',
+        width: (r.width + pad * 2) + 'px',
+        height: (r.height + pad * 2) + 'px',
+        background: 'transparent',
+        border: 'none',
+        outline: '2px solid #ff4d8d',
+        outlineOffset: '0px',
+        borderRadius: pickHighlightRadius(el),
+        boxShadow: 'none'
+      });
+    } else {
+      Object.assign(ED.pickOverlay.style, {
+        display: 'block',
+        left: r.left + 'px',
+        top: r.top + 'px',
+        width: r.width + 'px',
+        height: r.height + 'px',
+        background: 'rgba(37,99,235,.18)',
+        border: '2px solid var(--tly-scroll)',
+        outline: '',
+        outlineOffset: '',
+        borderRadius: '3px',
+        boxShadow: ''
+      });
+    }
     updatePickBanner(el);
   }
   function isOwn(el) {
@@ -2296,7 +2347,7 @@
       if (pickContext.id === 'new') {
         var t = Math.floor(engine.getTime() * 100) / 100;
         var hid = uuid();
-        config.highlights.push({ id: hid, start: t, end: +(t + 3).toFixed(2), color: DEFAULT_HIGHLIGHT_COLOR, animation: 'pulse', target: elementTarget(sel, 'center', label) });
+        config.highlights.push({ id: hid, start: t, end: +(t + 3).toFixed(2), color: DEFAULT_HIGHLIGHT_COLOR, animation: 'sweep', target: elementTarget(sel, 'center', label) });
         config.highlights.sort(function (a, b) { return a.start - b.start; });
         selectedHighlightId = hid;
         selectedPointId = null;
