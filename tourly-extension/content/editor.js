@@ -697,6 +697,10 @@
     if (!engine || !duration || !ED.track) return;
     var now0 = (performance && performance.now) ? performance.now() : Date.now();
     if (now0 < playheadScrubLockedUntil) return;
+    if (engine.state === 'playing') {
+      engine.pause();
+      if (ED.playBtn) ED.playBtn.textContent = '▶';
+    }
     function seekAt(cx, force) {
       var m = trackScrubMetrics();
       var ratio = m.contentW ? clamp((cx - m.rect.left - m.borderL) / m.contentW, 0, 1) : 0;

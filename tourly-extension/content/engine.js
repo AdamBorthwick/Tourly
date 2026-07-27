@@ -748,22 +748,21 @@
       '.tourly-hi-overlay{position:fixed;pointer-events:none;box-sizing:border-box;background:transparent;border:none;opacity:1;transform:translateZ(0)}',
       '.tourly-hi-ring{position:absolute;inset:0;width:100%;height:100%;overflow:visible}',
       '.tourly-hi-ring-path{stroke:var(--tly-hi-color,#ff4d8d);stroke-width:var(--tly-hi-stroke,2);fill:none;vector-effect:non-scaling-stroke}',
-      '.tourly-hi-kind-box.tourly-hi-anim-fade-in .tourly-hi-ring-path{animation:tourlyHiRingFade 2.4s ease-in-out infinite}',
+      '.tourly-hi-kind-box.tourly-hi-anim-fade-in .tourly-hi-ring-path{animation-name:tourlyHiRingFade;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiRingFade{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
       '.tourly-hi-kind-box.tourly-hi-anim-pulse .tourly-hi-ring-path{animation:tourlyHiRingPulse 1.35s ease-in-out infinite}',
       '@keyframes tourlyHiRingPulse{0%,100%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}12%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}24%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}44%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}56%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}76%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}88%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}}',
-      '.tourly-hi-kind-box.tourly-hi-anim-glow .tourly-hi-ring-path{animation:tourlyHiRingGlow 2.4s ease-in-out infinite;filter:drop-shadow(0 0 5px var(--tly-hi-color,#ff4d8d)) drop-shadow(0 0 12px var(--tly-hi-color,#ff4d8d))}',
+      '.tourly-hi-kind-box.tourly-hi-anim-glow .tourly-hi-ring-path{animation-name:tourlyHiRingGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both;filter:drop-shadow(0 0 5px var(--tly-hi-color,#ff4d8d)) drop-shadow(0 0 12px var(--tly-hi-color,#ff4d8d))}',
       '@keyframes tourlyHiRingGlow{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
-      '.tourly-hi-kind-box.tourly-hi-anim-sweep .tourly-hi-ring-path{animation:tourlyHiRingSweepDash 2.4s ease-in-out infinite,tourlyHiRingSweepLoop 2.4s linear infinite}',
+      '.tourly-hi-kind-box.tourly-hi-anim-sweep .tourly-hi-ring-path{animation-name:tourlyHiRingSweepDash;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiRingSweepDash{0%{stroke-dashoffset:var(--tly-hi-perimeter,400)}25%{stroke-dashoffset:0}75%{stroke-dashoffset:0}100%{stroke-dashoffset:var(--tly-hi-perimeter-neg,-400)}}',
-      '@keyframes tourlyHiRingSweepLoop{0%{opacity:0}0.01%{opacity:1}99.99%{opacity:1}100%{opacity:0}}',
-      '.tourly-hi-target-text.tourly-hi-anim-fade-in{animation:tourlyHiTextFade 2.4s ease-in-out infinite}',
+      '.tourly-hi-target-text.tourly-hi-anim-fade-in{animation-name:tourlyHiTextFade;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiTextFade{0%{text-shadow:0 0 8px transparent,0 0 16px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 16px transparent}}',
       '.tourly-hi-target-text.tourly-hi-anim-pulse{animation:tourlyHiTextPulse 1.35s ease-in-out infinite}',
       '@keyframes tourlyHiTextPulse{0%,100%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}12%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}24%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}44%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}56%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}76%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}88%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}}',
-      '.tourly-hi-target-text.tourly-hi-anim-glow{animation:tourlyHiTextGlow 2.4s ease-in-out infinite}',
+      '.tourly-hi-target-text.tourly-hi-anim-glow{animation-name:tourlyHiTextGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiTextGlow{0%{text-shadow:0 0 10px transparent,0 0 22px transparent,0 0 34px transparent}25%{text-shadow:0 0 10px var(--tly-hi-color,#ff4d8d),0 0 22px var(--tly-hi-color,#ff4d8d),0 0 34px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 10px var(--tly-hi-color,#ff4d8d),0 0 22px var(--tly-hi-color,#ff4d8d),0 0 34px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 10px transparent,0 0 22px transparent,0 0 34px transparent}}',
-      '.tourly-hi-target-text.tourly-hi-anim-sweep{animation:tourlyHiTextSweep 2.4s ease-in-out infinite}',
+      '.tourly-hi-target-text.tourly-hi-anim-sweep{animation-name:tourlyHiTextSweep;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiTextSweep{0%{text-shadow:0 0 8px transparent,0 0 18px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 18px transparent}}'
     ].join('');
     document.head.appendChild(s);
@@ -780,7 +779,33 @@
   };
 
   TourController.prototype._hiStyleKey = function (h, kind, anim) {
-    return kind + '|' + anim + '|' + (h.color || '#ff4d8d');
+    var span = Math.max(0.1, (h.end || 0) - (h.start || 0));
+    return kind + '|' + anim + '|' + (h.color || '#ff4d8d') + '|' + span.toFixed(2);
+  };
+
+  TourController.prototype._hiSpan = function (h) {
+    return Math.max(0.1, (h.end || 0) - (h.start || 0));
+  };
+
+  TourController.prototype._applyHiAnimTiming = function (ov, h, t, anim, kind, textNode, forceSync) {
+    if (anim === 'pulse') return;
+    var span = this._hiSpan(h);
+    var dur = span.toFixed(3) + 's';
+    var elapsed = clamp(t - h.start, 0, span);
+    var delay = (-elapsed).toFixed(3) + 's';
+    var lastT = ov._hiAnimLastT;
+    var seeked = forceSync || lastT == null || Math.abs(t - lastT) > SEEK_THRESHOLD;
+    ov._hiAnimLastT = t;
+    ov.style.setProperty('--tly-hi-duration', dur);
+    if (!seeked && ov._hiAnimTimed) return;
+    ov._hiAnimTimed = true;
+    var el = (kind === 'text') ? textNode : ov.querySelector('.tourly-hi-ring-path');
+    if (!el) return;
+    el.style.setProperty('--tly-hi-duration', dur);
+    el.style.animationDuration = dur;
+    el.style.animationDelay = delay;
+    el.style.animationIterationCount = '1';
+    el.style.animationFillMode = 'both';
   };
 
   TourController.prototype._measureHighlightForOverlay = function (node, ov) {
@@ -872,7 +897,8 @@
   TourController.prototype._applyHiTarget = function (h, m, anim) {
     if (!m || !m.textLike) return;
     var node = m.node;
-    var styleKey = anim + '|' + (h.color || '#ff4d8d');
+    var span = this._hiSpan(h);
+    var styleKey = anim + '|' + (h.color || '#ff4d8d') + '|' + span.toFixed(2);
     var prev = this._hiTargetNodes[h.id];
     if (prev && prev !== node) this._clearHiTargetById(h.id);
     if (this._hiTargetStyleKey[h.id] === styleKey && prev === node) return;
@@ -968,13 +994,17 @@
         ov._hiStyleKey = styleKey;
         ov.className = 'tourly-hi-overlay tourly-hi-kind-' + kind + ' tourly-hi-anim-' + anim;
         ov.style.setProperty('--tly-hi-color', color);
+        ov._hiAnimTimed = false;
+        ov._hiAnimLastT = null;
       }
       m = this._layoutHiOverlay(h, ov, anim);
       if (!m) continue;
       if (m.textLike) {
         if (styleChanged || !this._hiTargetNodes[h.id]) this._applyHiTarget(h, m, anim);
-      } else if (styleChanged) {
-        this._restartHiAnim(ov);
+        this._applyHiAnimTiming(ov, h, t, anim, kind, m.node, styleChanged);
+      } else {
+        if (styleChanged) this._restartHiAnim(ov);
+        this._applyHiAnimTiming(ov, h, t, anim, kind, null, styleChanged);
       }
     }
     Object.keys(this._hiOverlays).forEach(function (id) {
@@ -982,6 +1012,8 @@
         this._hiOverlays[id].style.display = 'none';
         this._clearHiTargetById(id);
         delete this._hiOverlays[id]._hiStyleKey;
+        delete this._hiOverlays[id]._hiAnimTimed;
+        delete this._hiOverlays[id]._hiAnimLastT;
       }
     }, this);
     this._hiActiveKey = activeKey;
