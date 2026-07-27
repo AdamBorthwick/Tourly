@@ -93,25 +93,39 @@ Injected onto the live page (via the popup → `chrome.scripting`). Reuses `engi
 
 **Key editor symbols (for grep):** `applyMotionLaneLayout`, `motionFocusLane`, `focusCompactLane`, `focusLaneItem`, `selectCue` / `selectPoint` / `selectHighlight`, `addMenuFlyout`, `positionAddMenu`, `positionAddMenuFlyout`, `updateTransportActions`, `syncTrackLabelContrast`, `setAutoSubBusy`, `setTranscribeStatus`.
 
-### 3. Export / delivery — CDN worker in front of jsDelivr
-The exported snippet is config inline + `<script src="<cdnUrl>/engine.js">`, where `cdnUrl` is
-**your own Cloudflare Worker URL** (`cdn-worker/`), not a bare jsDelivr link. Reasoning: jsDelivr
-requires a *public* GitHub repo, so a raw jsDelivr link exposes the whole engine source and gives
-every customer's embed a URL you don't control. The Worker fixes both without adding real cost:
+### 3. Export / delivery — single self-contained embed by default
 
-- `cdn-worker/worker.js` proxies `/engine.js` requests to `cdn.jsdelivr.net/gh/<repo>@<PINNED_TAG>/engine.js`
-  and edge-caches the response (`EDGE_CACHE_SECONDS`, default 5 min).
-- Deploys free to `https://tourly-cdn.<your-subdomain>.workers.dev` (see `cdn-worker/README.md`) — no
-  domain purchase required; a real domain can be routed to the same Worker later with zero code change.
-- **Every exported tour's embed code points at this Worker's URL for good.** To roll out an
-  `engine.js` fix to every live tour: push + tag the repo, bump `PINNED_TAG` in `worker.js`, `wrangler deploy`.
-- To stop depending on jsDelivr/GitHub entirely later (e.g. to keep the source private for a paid
-  product): swap the `fetch(upstream, …)` call in `worker.js` for a read from R2/KV and redeploy —
-  the public `/engine.js` URL, and therefore every already-pasted embed, is unaffected.
-- The extension ships with `DEFAULT_CDN` as an obvious placeholder (`YOUR-SUBDOMAIN`); the Export
-  tab shows a warning until a real Worker URL is saved, so a placeholder can't accidentally ship.
+**Default export is ONE `<script>` tag with everything inlined**: the tour config, Player.js (the
+vidzflow iframe control library), and the full `engine.js` runtime — concatenated as three
+independent, self-terminating IIFEs (`configLine; playerjs-source; engine-source`, each separated
+by an explicit `;` to avoid ASI hazards between minified/unminified blocks). Zero external
+requests, so a pasted tour can never break if any CDN, GitHub, or third-party host goes down —
+this was the original requirement and is restored as the default (an earlier pass briefly made a
+CDN-hosted two-tag form the default, which was a regression; fixed).
 
-(A fully-inlined, zero-external-request export variant was discussed as an alternative; not built.)
+**Player.js is required, not optional**: the live vidzflow iframe adapter (`_initPlayer` in
+`engine.js`) needs `window.playerjs` to exist or it silently no-ops (`console.warn` and returns) —
+without it a live tour's video would render but be completely uncontrollable (no scroll-sync, no
+play/pause). Both export modes below always inline it.
+
+`renderExportTab()`/`snippet()` in `editor.js` build this by fetching the raw source of
+`content/engine.js` + `lib/playerjs.min.js` once (`loadEmbedSources()` — via
+`chrome.runtime.getURL()` in the extension, or the dev-server paths in the harness) and string-
+concatenating them. Verified end-to-end: generated a real export, pasted it into a bare HTML page
+with **no other scripts at all**, and confirmed `window.Tourly`/`window.playerjs` both load, the
+vidzflow iframe mounts, Player.js connects (`_playerReady: true`, real duration read from the
+video), and `play()` genuinely drives playback state via postMessage — zero console errors.
+
+**Advanced/optional: hosted CDN mode.** The Export tab has a toggle ("load the runtime from a
+hosted CDN instead") for people who want to update *every* exported tour's engine at once without
+re-pasting anywhere — this is what `cdn-worker/` (a Cloudflare Worker proxying
+`cdn.jsdelivr.net/gh/<repo>@<PINNED_TAG>/engine.js`, deployed free to
+`https://tourly-cdn.<subdomain>.workers.dev`) is for. When enabled, `cdnUrl` (persisted under
+`tourly:cdnUrl`, toggle state under `tourly:useHostedCdn`) is used for engine.js via
+`<script src>`, while Player.js is still always inlined. Off by default. To roll an engine.js fix
+out to every tour using hosted mode: push + tag the repo, bump `PINNED_TAG` in `worker.js`,
+`wrangler deploy` — no re-pasting needed for *those* tours specifically (default-mode tours still
+need re-export, since they're fully self-contained by design).
 
 ---
 

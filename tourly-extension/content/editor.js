@@ -9,10 +9,10 @@
   if (window.__tourlyEditor) { window.__tourlyEditor.toggle(); return; }
 
   var EDITOR_H = 220;
-  // The deployed cdn-worker/ URL — baked in so every install (including friends' installs
-  // later) already exports working embeds with nothing to paste. Exports never point straight
-  // at jsDelivr — always at this first-party URL, so the backend can change later (e.g. to
-  // private hosting) without breaking anything already pasted into a site.
+  // Default export is a SINGLE self-contained <script> — engine.js and Player.js inlined
+  // alongside the tour config, so a pasted embed has zero external dependency and can never
+  // break if any CDN goes down. The deployed cdn-worker/ URL below only matters if the user
+  // opts into "hosted" mode (Export tab toggle) for centrally-updating many tours at once.
   var DEFAULT_CDN = 'https://tourly-cdn.tourly567.workers.dev';
 
   // A tour's page identity must include the origin, not just the path — otherwise two different
@@ -24,6 +24,7 @@
   var store = {
     key: 'tourly:' + pageKey(),
     cdnKey: 'tourly:cdnUrl',
+    modeKey: 'tourly:exportMode',
     get: function (key, cb) {
       if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.get(key, function (r) { cb(r[key]); });
       else { try { cb(JSON.parse(localStorage.getItem(key) || 'null')); } catch (e) { cb(null); } }
@@ -132,6 +133,45 @@
   // ---- state ----
   var ED = {};
   var config = null, engine = null, duration = 0, cdnUrl = DEFAULT_CDN;
+  // 'concise' (default): <script data-tourly-id src="cdnUrl/engine.js"> — tiny, always current,
+  // needs the backend live at page-load. 'self-contained': everything inlined, zero dependency,
+  // larger snippet. See snippet().
+  var exportMode = 'concise';
+  var embedSources = { engine: null, playerjs: null, loading: false };
+
+  // Fetch the raw source of engine.js + Player.js once, so the default export can inline them
+  // into a single <script> with zero external dependency. Extension context reads its own
+  // bundled files directly; the dev-server harness fetches the equivalent local paths.
+  function loadEmbedSources(cb) {
+    if (embedSources.engine && embedSources.playerjs) { cb(embedSources); return; }
+    if (embedSources.loading) { embedSources._waiters = (embedSources._waiters || []).concat(cb); return; }
+    embedSources.loading = true;
+    embedSources._waiters = [cb];
+    var engineUrl, playerjsUrl;
+    if (window.chrome && chrome.runtime && chrome.runtime.getURL) {
+      engineUrl = chrome.runtime.getURL('content/engine.js');
+      playerjsUrl = chrome.runtime.getURL('lib/playerjs.min.js');
+    } else {
+      engineUrl = '/engine.js';
+      playerjsUrl = '/tourly-extension/lib/playerjs.min.js';
+    }
+    Promise.all([
+      fetch(engineUrl).then(function (r) { return r.text(); }),
+      fetch(playerjsUrl).then(function (r) { return r.text(); })
+    ]).then(function (res) {
+      embedSources.engine = res[0];
+      embedSources.playerjs = res[1];
+      embedSources.loading = false;
+      var waiters = embedSources._waiters || [];
+      embedSources._waiters = [];
+      waiters.forEach(function (w) { w(embedSources); });
+    }).catch(function () {
+      embedSources.loading = false;
+      var waiters = embedSources._waiters || [];
+      embedSources._waiters = [];
+      waiters.forEach(function (w) { w(null); });
+    });
+  }
   var activeTab = 'scroll';
   var pickContext = null; // { type: 'scroll'|'highlight', id: string }
   var previewActive = false;
@@ -156,7 +196,29 @@
   var transcribing = false;
   var EXPAND_TABS = { theme: true, export: true };
   var DEFAULT_HIGHLIGHT_COLOR = '#ff4d8d';
-  var HIGHLIGHT_ANIMS = ['fade-in', 'sweep', 'pulse', 'glow'];
+  var HIGHLIGHT_ANIMS_COMMON = ['outline', 'sweep', 'pulse'];
+
+  function highlightAnimLabel(a) {
+    if (a === 'text-glow') return 'Text glow';
+    if (a === 'box-glow') return 'Box glow';
+    if (a === 'outline') return 'Outline';
+    if (a === 'fade-in') return 'Outline';
+    return a;
+  }
+
+  function highlightAnimsFor(hl) {
+    var anims = HIGHLIGHT_ANIMS_COMMON.slice();
+    var hasText = !engine || !engine.highlightTargetHasText || engine.highlightTargetHasText(hl.target);
+    if (hasText) anims.push('text-glow');
+    anims.push('box-glow');
+    return anims;
+  }
+
+  function normalizeHighlightAnim(hl) {
+    if (!hl) return;
+    if (hl.animation === 'glow') hl.animation = 'box-glow';
+    if (hl.animation === 'fade-in') hl.animation = 'outline';
+  }
 
   function newConfig() {
     return {
@@ -201,7 +263,7 @@
   function save() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
-      store.set(store.key, config); store.set(store.cdnKey, cdnUrl);
+      store.set(store.key, config); store.set(store.cdnKey, cdnUrl); store.set(store.modeKey, exportMode);
       if (cloud.configured) bg({ type: 'toursSave', tour: { id: config.id, name: config.name, page_url: config.pageUrl || pageKey(), config: config } });
     }, 300);
   }
@@ -2196,10 +2258,14 @@
     var s = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: hl.start, onchange: function () { hl.start = +s.value; config.highlights.sort(function (a, b) { return a.start - b.start; }); save(); refreshPreview(); renderTimeline(); } });
     var e = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: hl.end, onchange: function () { hl.end = +e.value; save(); refreshPreview(); renderTimeline(); } });
     var col = h('input', { class: 'tly-color', type: 'color', value: hl.color || DEFAULT_HIGHLIGHT_COLOR, oninput: function () { hl.color = col.value; save(); refreshPreview(); renderTimeline(); } });
+    normalizeHighlightAnim(hl);
+    var animOptions = highlightAnimsFor(hl);
+    var currentAnim = hl.animation || 'pulse';
+    if (animOptions.indexOf(currentAnim) < 0) animOptions = animOptions.concat([currentAnim]);
     var animSel = h('select', { class: 'tly-sel', onchange: function () { hl.animation = animSel.value; save(); refreshPreview(); } },
-      HIGHLIGHT_ANIMS.map(function (a) {
-        var op = h('option', { value: a, text: a });
-        if ((hl.animation || 'pulse') === a) op.selected = true;
+      animOptions.map(function (a) {
+        var op = h('option', { value: a, text: highlightAnimLabel(a) });
+        if (currentAnim === a) op.selected = true;
         return op;
       }));
     var elName = displayNameForTarget(hl.target);
@@ -2438,26 +2504,69 @@
   }
 
   function renderExportTab() {
-    var isPlaceholder = !cdnUrl || cdnUrl.indexOf('YOUR-SUBDOMAIN') > -1;
-    var cdnIn = h('input', { class: 'tly-url', value: cdnUrl, placeholder: 'https://tourly-cdn.yoursubdomain.workers.dev', oninput: function () {
-      cdnUrl = cdnIn.value.trim() || DEFAULT_CDN; save(); ta.value = snippet(); warn.classList.toggle('tly-hidden', cdnUrl.indexOf('YOUR-SUBDOMAIN') === -1);
-    } });
     var ta = h('textarea', { class: 'tly-export', readonly: 'readonly' });
-    ta.value = snippet();
+    ta.value = 'Building embed…';
+
+    var isPlaceholder = !cdnUrl || cdnUrl.indexOf('YOUR-SUBDOMAIN') > -1;
+    var notSynced = !cloud.configured;
+
+    var cdnIn = h('input', { class: 'tly-url', value: cdnUrl, placeholder: 'https://tourly-cdn.yoursubdomain.workers.dev', oninput: function () {
+      cdnUrl = cdnIn.value.trim() || DEFAULT_CDN; save(); refreshSnippet();
+      cdnWarn.classList.toggle('tly-hidden', cdnUrl.indexOf('YOUR-SUBDOMAIN') === -1);
+    } });
+    var cdnRow = h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'CDN URL' }), cdnIn]);
+    var cdnWarn = h('div', { class: 'tly-hint tly-warn-text' + (isPlaceholder ? '' : ' tly-hidden'), text: '⚠ Deploy cdn-worker/ (see its README) and paste your real Worker URL above before publishing — this placeholder won’t load.' });
+    var syncWarn = h('div', { class: 'tly-hint tly-warn-text' + (notSynced ? '' : ' tly-hidden'), text: '⚠ Cloud sync isn’t connected — a concise embed fetches this tour by id at runtime, so it needs to be saved to the cloud first, or visitors will see nothing.' });
+
+    var modeSel = h('select', { class: 'tly-sel' }, [
+      h('option', { value: 'concise', text: 'Concise (recommended) — tiny snippet, fetches this tour live' }),
+      h('option', { value: 'self-contained', text: 'Self-contained — larger, works with zero external dependency' })
+    ]);
+    modeSel.value = exportMode;
+    modeSel.addEventListener('change', function () {
+      exportMode = modeSel.value; save();
+      cdnRow.classList.toggle('tly-hidden', exportMode !== 'concise');
+      syncWarn.classList.toggle('tly-hidden', exportMode !== 'concise' || !notSynced);
+      refreshSnippet();
+    });
+    cdnRow.classList.toggle('tly-hidden', exportMode !== 'concise');
+
     var copyBtn = h('button', { class: 'tly-btn tly-primary', text: 'Copy embed code', onclick: function () { ta.select(); try { document.execCommand('copy'); } catch (e) {} copyBtn.textContent = 'Copied ✓'; setTimeout(function () { copyBtn.textContent = 'Copy embed code'; }, 1500); } });
-    var warn = h('div', { class: 'tly-hint tly-warn-text' + (isPlaceholder ? '' : ' tly-hidden'), text: '⚠ Deploy cdn-worker/ (see its README) and paste your real Worker URL above before publishing — this placeholder won’t load.' });
-    ED.panel.appendChild(h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'CDN URL' }), cdnIn]));
-    ED.panel.appendChild(warn);
+
+    ED.panel.appendChild(h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'Export mode' }), modeSel]));
+    ED.panel.appendChild(cdnRow);
+    ED.panel.appendChild(cdnWarn);
+    ED.panel.appendChild(syncWarn);
     ED.panel.appendChild(h('div', { class: 'tly-row' }, [copyBtn, h('span', { class: 'tly-hint', text: 'Paste this into the page’s per-page custom code (before </body>).' })]));
     ED.panel.appendChild(ta);
+
+    function refreshSnippet() {
+      if (exportMode === 'concise') { ta.value = snippet(); return; }
+      // Self-contained needs the actual runtime source text inlined.
+      loadEmbedSources(function (src) {
+        ta.value = src ? snippet() : '<!-- Could not load the tour runtime to embed — try reopening the editor. -->';
+      });
+    }
+    refreshSnippet();
   }
 
   function snippet() {
+    if (exportMode === 'concise') {
+      var base = (cdnUrl || DEFAULT_CDN).replace(/\/+$/, '');
+      // Tiny: no config inlined at all — engine.js fetches this tour's config by id at page-load
+      // (see engine.js's fetchAndMount / the public read-only RLS policy it relies on).
+      return '<script data-tourly-id="' + config.id + '" src="' + base + '/engine.js" defer></script>';
+    }
+
+    // Self-contained: Player.js + engine.js + config all inlined in one <script> block — zero
+    // external requests, so the tour works even if the backend/CDN is unreachable.
     var out = clone(config);
     delete out.pageUrl;
-    var base = (cdnUrl || DEFAULT_CDN).replace(/\/+$/, '');
-    return '<script>window.TOURLY_CONFIG = ' + JSON.stringify(out) + ';</script>\n' +
-      '<script src="' + base + '/engine.js" defer></script>';
+    var configLine = 'window.TOURLY_CONFIG = ' + JSON.stringify(out) + ';';
+    return '<script>\n' + configLine + '\n' +
+      (embedSources.playerjs || '') + '\n;\n' +
+      (embedSources.engine || '') +
+      '\n</script>';
   }
 
   // ---- public API ----
@@ -2482,7 +2591,11 @@
 
   // ---- init ----
   function init() {
-    store.get(store.cdnKey, function (r) { if (r) cdnUrl = r; });
+    // Ignore a stored value that's still the old literal placeholder (from before DEFAULT_CDN
+    // was filled in with the real deployed URL) — otherwise a stale save permanently shadows
+    // every future improvement to the default.
+    store.get(store.cdnKey, function (r) { if (r && r.indexOf('YOUR-SUBDOMAIN') === -1) cdnUrl = r; });
+    store.get(store.modeKey, function (r) { if (r === 'concise' || r === 'self-contained') exportMode = r; });
     bg({ type: 'getConfig' }, function (r) {
       if (r && r.ok) { cloud.configured = r.configured; cloud.userId = r.userId; updateCloudNote(); }
     });

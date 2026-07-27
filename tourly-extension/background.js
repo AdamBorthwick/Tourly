@@ -60,6 +60,10 @@ async function handle(msg) {
     case 'toursSave':    return saveTour(msg.tour);
     case 'toursDelete':  return sb('DELETE', '?id=eq.' + enc(msg.id));
     case 'transcribeSubtitles': return transcribeSubtitles(msg.embedUrl, msg.videoId);
+    case 'authAddEmail': return authAddEmail(msg.email);
+    case 'authSignIn':   return authSignIn(msg.email);
+    case 'authVerifyCode': return authVerifyCode(msg.mode, msg.email, msg.token);
+    case 'authSignOut':  return authSignOut();
     default:             return { ok: false, error: 'unknown message ' + msg.type };
   }
 }
@@ -163,9 +167,27 @@ async function persistSession(data) {
     access_token: tok,
     refresh_token: refresh,
     expires_at: Math.floor(Date.now() / 1000) + expiresIn,
-    user_id: user && user.id
+    user_id: user && user.id,
+    email: (user && user.email) || null,
+    is_anonymous: !!(user && user.is_anonymous)
   };
   await storageSet({ [SESSION_KEY]: session });
+  return session;
+}
+
+// Re-fetch /auth/v1/user with the current session's own token — used after a successful
+// authAddEmail/authSignIn verify, since the verify response's session may be stale/partial
+// compared to a fresh GET of the confirmed user record (is_anonymous flips server-side on confirm).
+async function refreshUserFields(cfg, session) {
+  try {
+    var res = await fetch(cfg.url + '/auth/v1/user', { headers: authHeaders(cfg, session.access_token) });
+    var user = await res.json();
+    if (res.ok && user) {
+      session.email = user.email || null;
+      session.is_anonymous = !!user.is_anonymous;
+      await storageSet({ [SESSION_KEY]: session });
+    }
+  } catch (e) { /* best-effort */ }
   return session;
 }
 
@@ -187,13 +209,103 @@ async function getConfig() {
     };
   }
   const session = await ensureSession();
-  if (session) return { ok: true, configured: true, userId: session.user_id, url: cfg.url, error: null };
+  if (session) {
+    return {
+      ok: true, configured: true, url: cfg.url, error: null,
+      userId: session.user_id,
+      email: session.email || null,
+      isAnonymous: session.is_anonymous !== false   // default true (older cached sessions predate this field)
+    };
+  }
   return {
     ok: true, configured: false, url: cfg.url,
     error: lastAuthError
       ? 'Sign-in failed: ' + lastAuthError
       : 'Sign-in failed — enable Anonymous sign-ins in Supabase → Authentication → Providers'
   };
+}
+
+// ---- identity upgrade: anonymous -> email (Flow A) and sign-in-on-another-device (Flow B) ----
+// Both send a 6-digit code (not a clickable link — there's no clean way for an email click to
+// land back inside a chrome-extension:// popup). Flow A links the SAME auth.uid() to an email,
+// so every existing `tours` row (FK'd to that id) is already correctly attached the moment it
+// confirms — no migration. Flow B is a real sign-in to a DIFFERENT (pre-existing) account, which
+// replaces the current device's session entirely.
+
+// Flow A — upgrade the current (anonymous) session by attaching an email to it.
+async function authAddEmail(email) {
+  email = (email || '').trim();
+  if (!email) return { ok: false, error: 'Email required' };
+  const cfg = await sbCfg();
+  if (!cfg) return { ok: false, error: 'not configured' };
+  const session = await ensureSession();
+  if (!session) return { ok: false, error: lastAuthError || 'not authenticated' };
+
+  try {
+    const res = await fetch(cfg.url + '/auth/v1/user', {
+      method: 'PUT', headers: authHeaders(cfg, session.access_token), body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: (data && (data.msg || data.message || data.error_code)) || ('HTTP ' + res.status) };
+    return { ok: true, mode: 'email_change', email };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+// Flow B — sign in to an EXISTING (already email-linked) account, e.g. on a new device.
+// create_user:false so a typo or a never-upgraded email fails cleanly instead of silently
+// creating a brand new, disconnected account.
+async function authSignIn(email) {
+  email = (email || '').trim();
+  if (!email) return { ok: false, error: 'Email required' };
+  const cfg = await sbCfg();
+  if (!cfg) return { ok: false, error: 'not configured' };
+
+  try {
+    const res = await fetch(cfg.url + '/auth/v1/otp', {
+      method: 'POST', headers: authHeaders(cfg), body: JSON.stringify({ email, create_user: false })
+    });
+    if (res.status === 422) return { ok: false, error: 'No account found for that email — use "Add email" instead if this is your first time.' };
+    const data = await res.json().catch(function () { return null; });
+    if (!res.ok) return { ok: false, error: (data && (data.msg || data.message || data.error_code)) || ('HTTP ' + res.status) };
+    return { ok: true, mode: 'email', email };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+// Shared verify step for both flows above. `mode` selects the GoTrue `type` — 'email_change' for
+// Flow A (confirming an email attached to the current session), 'email' for Flow B (a fresh
+// sign-in). On success, persist the returned session (Flow B's session belongs to the OTHER
+// account and correctly replaces whatever was here before).
+async function authVerifyCode(mode, email, token) {
+  email = (email || '').trim(); token = (token || '').trim();
+  if (!email || !token) return { ok: false, error: 'Email and code required' };
+  if (mode !== 'email_change' && mode !== 'email') return { ok: false, error: 'Invalid verify mode' };
+  const cfg = await sbCfg();
+  if (!cfg) return { ok: false, error: 'not configured' };
+
+  try {
+    const res = await fetch(cfg.url + '/auth/v1/verify', {
+      method: 'POST', headers: authHeaders(cfg), body: JSON.stringify({ type: mode, email, token })
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: (data && (data.msg || data.message || data.error_code)) || ('HTTP ' + res.status) };
+    var session = await persistSession(data);
+    if (!session) return { ok: false, error: 'Verified, but no session returned' };
+    session = await refreshUserFields(cfg, session);
+    return { ok: true, email: session.email, isAnonymous: session.is_anonymous };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+// Drop the current session and fall back to a fresh local-only anonymous identity — never
+// deletes anything already synced under the signed-in account, just stops acting as that user.
+async function authSignOut() {
+  const cfg = await sbCfg();
+  const session = await storageGet(SESSION_KEY);
+  if (cfg && session && session.access_token) {
+    try { await fetch(cfg.url + '/auth/v1/logout', { method: 'POST', headers: authHeaders(cfg, session.access_token) }); } catch (e) {}
+  }
+  await storageSet({ [SESSION_KEY]: null });
+  const fresh = await ensureSession();
+  return { ok: !!fresh, email: null, isAnonymous: true };
 }
 
 // ---- supabase REST (uses per-install JWT; RLS scopes rows to auth.uid()) ----

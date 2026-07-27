@@ -25,6 +25,15 @@
   var TOAST_MS = 2600;        // how long the "scroll is guided" toast stays up
   var SCROLL_KEYS = { ' ': 1, 'Spacebar': 1, 'ArrowUp': 1, 'ArrowDown': 1, 'PageUp': 1, 'PageDown': 1, 'Home': 1, 'End': 1 };
 
+  // Shared backend for "concise" exports (a script tag carrying a data-tourly-id attribute, no
+  // inline config) — the same project tourly-extension/supabase-config.js points at. Read-only
+  // anon access to a tour's own config, scoped by a narrow RLS policy (public.tours: select-only,
+  // anon role) — see supabase/migrations/20260727000000_public_read_tours_for_concise_export.sql.
+  var TOURLY_BACKEND = {
+    url: 'https://awdwqqaaqaqitnaxjicu.supabase.co',
+    anonKey: 'sb_publishable_XylxLJW9mVLfRce5AS0_jg_EAfUDlCr'
+  };
+
   // ---- defaults ------------------------------------------------------------
   var DEFAULTS = {
     theme: {
@@ -80,7 +89,73 @@
   var HI_DEFAULT_RADIUS = 8;
   var HI_PAD = HI_OUTSET + HI_STROKE * 0.5;
   var SVG_NS = 'http://www.w3.org/2000/svg';
-  var HI_ANIM_CLASSES = ['tourly-hi-anim-fade-in', 'tourly-hi-anim-sweep', 'tourly-hi-anim-pulse', 'tourly-hi-anim-glow'];
+  var HI_ANIM_CLASSES = ['tourly-hi-anim-outline', 'tourly-hi-anim-fade-in', 'tourly-hi-anim-sweep', 'tourly-hi-anim-pulse', 'tourly-hi-anim-glow', 'tourly-hi-anim-text-glow', 'tourly-hi-anim-box-glow'];
+  var HI_BOX_GLOW_OUT = 18;
+  var HI_SWEEP_OUT = 18;
+  var HI_RING_GLOW_OUTSET = 12;
+  var HI_SWEEP_GLOW_SCALE = 1.04;
+
+  function outerAnnulusClipD(innerW, innerH, inset, iw, ih, radii, stroke) {
+    var outer = 'M 0 0 H' + innerW + ' V' + innerH + ' H 0 Z';
+    var holeInset = inset + stroke / 2;
+    var holeW = Math.max(0, iw - stroke);
+    var holeH = Math.max(0, ih - stroke);
+    var maxR = Math.max(0, Math.min(holeW, holeH) / 2);
+    var rtl = Math.min(radii.tl, maxR);
+    var rtr = Math.min(radii.tr, maxR);
+    var rbr = Math.min(radii.br, maxR);
+    var rbl = Math.min(radii.bl, maxR);
+    var inner = roundedRectPath(holeInset, holeInset, holeW, holeH, rtl, rtr, rbr, rbl);
+    return outer + ' ' + inner;
+  }
+  var TEXT_GLOW_SEL = 'h1,h2,h3,h4,h5,h6,p,span,a,label,li,td,th,em,strong,b,i,small,figcaption,blockquote,cite,code,pre,dt,dd,legend,caption';
+
+  function hiRingOutset(anim) {
+    if (anim === 'box-glow' || anim === 'pulse') return HI_BOX_GLOW_OUT;
+    if (anim === 'sweep') return HI_SWEEP_OUT;
+    return 0;
+  }
+
+  function hiRingUsesGlowPath(anim) {
+    return anim === 'sweep';
+  }
+
+  function hiRingUsesGlowHalo(anim) {
+    return anim === 'box-glow' || anim === 'pulse';
+  }
+
+  function expandCornerRadii(radii, out, w, h) {
+    var maxR = Math.max(0, Math.min(w, h) / 2);
+    return {
+      tl: Math.min(radii.tl + out, maxR),
+      tr: Math.min(radii.tr + out, maxR),
+      br: Math.min(radii.br + out, maxR),
+      bl: Math.min(radii.bl + out, maxR)
+    };
+  }
+
+  function textGlowTargets(root) {
+    if (!root) return [];
+    if (isTextLikeNode(root)) return [root];
+    var list = [], els = root.querySelectorAll(TEXT_GLOW_SEL), i;
+    for (i = 0; i < els.length; i++) {
+      if ((els[i].textContent || '').trim()) list.push(els[i]);
+    }
+    if (!list.length && nodeHasTextContent(root)) list.push(root);
+    return list;
+  }
+
+  function resolveHiAnim(anim, kind) {
+    anim = (anim || 'pulse').replace(/\s+/g, '-');
+    if (anim === 'fade-in') anim = 'outline';
+    if (anim === 'glow') return kind === 'text' ? 'text-glow' : 'box-glow';
+    return anim;
+  }
+
+  function nodeHasTextContent(node) {
+    if (!node) return false;
+    return !!(node.textContent || '').trim();
+  }
 
   function parsePx(val) {
     var n = parseFloat(val);
@@ -744,24 +819,34 @@
     var s = document.createElement('style');
     s.id = 'tourly-hi-styles';
     s.textContent = [
-      '.tourly-hi-layer{position:fixed;inset:0;pointer-events:none;z-index:2147482000}',
-      '.tourly-hi-overlay{position:fixed;pointer-events:none;box-sizing:border-box;background:transparent;border:none;opacity:1;transform:translateZ(0)}',
+      '.tourly-hi-layer{position:fixed;inset:0;pointer-events:none;z-index:2147482000;overflow:visible}',
+      '.tourly-hi-overlay{position:fixed;pointer-events:none;box-sizing:border-box;background:transparent;border:none;opacity:1;transform:translateZ(0);overflow:visible}',
+      '.tourly-hi-ring-shell{position:absolute;overflow:visible;pointer-events:none}',
       '.tourly-hi-ring{position:absolute;inset:0;width:100%;height:100%;overflow:visible}',
       '.tourly-hi-ring-path{stroke:var(--tly-hi-color,#ff4d8d);stroke-width:var(--tly-hi-stroke,2);fill:none;vector-effect:non-scaling-stroke}',
-      '.tourly-hi-kind-box.tourly-hi-anim-fade-in .tourly-hi-ring-path{animation-name:tourlyHiRingFade;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
-      '@keyframes tourlyHiRingFade{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
-      '.tourly-hi-kind-box.tourly-hi-anim-pulse .tourly-hi-ring-path{animation:tourlyHiRingPulse 1.35s ease-in-out infinite}',
-      '@keyframes tourlyHiRingPulse{0%,100%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}12%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}24%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}44%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}56%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}76%{stroke-opacity:.42;stroke-width:calc(var(--tly-hi-stroke,2) + 1.5px)}88%{stroke-opacity:1;stroke-width:var(--tly-hi-stroke,2)}}',
-      '.tourly-hi-kind-box.tourly-hi-anim-glow .tourly-hi-ring-path{animation-name:tourlyHiRingGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both;filter:drop-shadow(0 0 5px var(--tly-hi-color,#ff4d8d)) drop-shadow(0 0 12px var(--tly-hi-color,#ff4d8d))}',
-      '@keyframes tourlyHiRingGlow{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
-      '.tourly-hi-kind-box.tourly-hi-anim-sweep .tourly-hi-ring-path{animation-name:tourlyHiRingSweepDash;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '.tourly-hi-glow-halo{position:absolute;inset:0;border-radius:inherit;background:transparent;pointer-events:none;display:none;box-shadow:0 0 10px var(--tly-hi-color,#ff4d8d),0 0 22px var(--tly-hi-color,#ff4d8d);opacity:0}',
+      '.tourly-hi-ring-glow{display:none;stroke:var(--tly-hi-color,#ff4d8d);stroke-width:var(--tly-hi-stroke,2);fill:none;vector-effect:non-scaling-stroke}',
+      '.tourly-hi-anim-outline .tourly-hi-ring-path{animation-name:tourlyHiRingOutline;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '@keyframes tourlyHiRingOutline{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
+      '.tourly-hi-anim-pulse .tourly-hi-ring-shell{overflow:visible}',
+      '.tourly-hi-anim-pulse .tourly-hi-glow-halo{display:block;animation:tourlyHiRingPulseGlow 1.35s ease-in-out infinite}',
+      '.tourly-hi-anim-pulse .tourly-hi-ring-path{animation:tourlyHiRingPulseGlow 1.35s ease-in-out infinite}',
+      '@keyframes tourlyHiRingPulseGlow{0%{opacity:0}20%{opacity:1}40%{opacity:0}60%{opacity:1}80%{opacity:0}100%{opacity:0}}',
+      '.tourly-hi-anim-box-glow .tourly-hi-ring-shell{overflow:visible}',
+      '.tourly-hi-anim-box-glow .tourly-hi-glow-halo{display:block;animation-name:tourlyHiRingBoxGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '.tourly-hi-anim-box-glow .tourly-hi-ring-path{animation-name:tourlyHiRingBoxGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '@keyframes tourlyHiRingBoxGlow{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
+      '.tourly-hi-anim-sweep .tourly-hi-ring-shell{overflow:visible}',
+      '.tourly-hi-anim-sweep .tourly-hi-ring-glow-wrap{filter:drop-shadow(0 0 10px var(--tly-hi-color,#ff4d8d)) drop-shadow(0 0 22px var(--tly-hi-color,#ff4d8d))}',
+      '.tourly-hi-anim-sweep .tourly-hi-ring-glow{display:block;opacity:1;stroke-width:3;animation-name:tourlyHiRingSweepDash;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '.tourly-hi-anim-sweep .tourly-hi-ring-path{animation-name:tourlyHiRingSweepDash;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiRingSweepDash{0%{stroke-dashoffset:var(--tly-hi-perimeter,400)}25%{stroke-dashoffset:0}75%{stroke-dashoffset:0}100%{stroke-dashoffset:var(--tly-hi-perimeter-neg,-400)}}',
-      '.tourly-hi-target-text.tourly-hi-anim-fade-in{animation-name:tourlyHiTextFade;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
-      '@keyframes tourlyHiTextFade{0%{text-shadow:0 0 8px transparent,0 0 16px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 16px transparent}}',
+      '.tourly-hi-target-text.tourly-hi-anim-text-glow{animation-name:tourlyHiTextGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '@keyframes tourlyHiTextGlow{0%{text-shadow:0 0 0 transparent,0 0 0 transparent,0 0 0 transparent,0 0 0 transparent}25%{text-shadow:0 0 4px var(--tly-hi-color,#ff4d8d),0 0 10px var(--tly-hi-color,#ff4d8d),0 0 20px var(--tly-hi-color,#ff4d8d),0 0 32px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 4px var(--tly-hi-color,#ff4d8d),0 0 10px var(--tly-hi-color,#ff4d8d),0 0 20px var(--tly-hi-color,#ff4d8d),0 0 32px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 0 transparent,0 0 0 transparent,0 0 0 transparent,0 0 0 transparent}}',
+      '.tourly-hi-target-text.tourly-hi-anim-outline{animation-name:tourlyHiTextOutline;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '@keyframes tourlyHiTextOutline{0%{text-shadow:0 0 8px transparent,0 0 16px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 16px transparent}}',
       '.tourly-hi-target-text.tourly-hi-anim-pulse{animation:tourlyHiTextPulse 1.35s ease-in-out infinite}',
-      '@keyframes tourlyHiTextPulse{0%,100%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}12%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}24%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}44%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}56%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}76%{text-shadow:0 0 14px var(--tly-hi-color,#ff4d8d),0 0 28px var(--tly-hi-color,#ff4d8d)}88%{text-shadow:0 0 6px var(--tly-hi-color,#ff4d8d),0 0 12px var(--tly-hi-color,#ff4d8d)}}',
-      '.tourly-hi-target-text.tourly-hi-anim-glow{animation-name:tourlyHiTextGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
-      '@keyframes tourlyHiTextGlow{0%{text-shadow:0 0 10px transparent,0 0 22px transparent,0 0 34px transparent}25%{text-shadow:0 0 10px var(--tly-hi-color,#ff4d8d),0 0 22px var(--tly-hi-color,#ff4d8d),0 0 34px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 10px var(--tly-hi-color,#ff4d8d),0 0 22px var(--tly-hi-color,#ff4d8d),0 0 34px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 10px transparent,0 0 22px transparent,0 0 34px transparent}}',
+      '@keyframes tourlyHiTextPulse{0%{text-shadow:0 0 0 transparent,0 0 0 transparent}20%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}40%{text-shadow:0 0 0 transparent,0 0 0 transparent}60%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}80%{text-shadow:0 0 0 transparent,0 0 0 transparent}100%{text-shadow:0 0 0 transparent,0 0 0 transparent}}',
       '.tourly-hi-target-text.tourly-hi-anim-sweep{animation-name:tourlyHiTextSweep;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiTextSweep{0%{text-shadow:0 0 8px transparent,0 0 18px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 18px transparent}}'
     ].join('');
@@ -776,6 +861,7 @@
     this._hiOverlays = {};
     this._hiActiveKey = '';
     this._hiTargetStyleKey = {};
+    this._hiTargetOrig = {};
   };
 
   TourController.prototype._hiStyleKey = function (h, kind, anim) {
@@ -785,6 +871,19 @@
 
   TourController.prototype._hiSpan = function (h) {
     return Math.max(0.1, (h.end || 0) - (h.start || 0));
+  };
+
+  TourController.prototype._hiTargetList = function (id) {
+    var nodes = this._hiTargetNodes[id];
+    if (!nodes) return [];
+    return Array.isArray(nodes) ? nodes : [nodes];
+  };
+
+  TourController.prototype._hiAnimEl = function (ov, anim, kind, textNode) {
+    if (anim === 'text-glow') return textNode;
+    if (anim === 'box-glow') return ov.querySelector('.tourly-hi-glow-halo');
+    if (kind === 'text' && anim !== 'box-glow') return textNode;
+    return ov.querySelector('.tourly-hi-ring-path');
   };
 
   TourController.prototype._applyHiAnimTiming = function (ov, h, t, anim, kind, textNode, forceSync) {
@@ -799,13 +898,45 @@
     ov.style.setProperty('--tly-hi-duration', dur);
     if (!seeked && ov._hiAnimTimed) return;
     ov._hiAnimTimed = true;
-    var el = (kind === 'text') ? textNode : ov.querySelector('.tourly-hi-ring-path');
+    if (anim === 'text-glow') {
+      var targets = this._hiTargetList(h.id);
+      for (var ti = 0; ti < targets.length; ti++) {
+        var tg = targets[ti];
+        tg.style.setProperty('--tly-hi-duration', dur);
+        tg.style.animationDuration = dur;
+        tg.style.animationDelay = delay;
+        tg.style.animationIterationCount = '1';
+        tg.style.animationFillMode = 'both';
+      }
+      return;
+    }
+    var el = this._hiAnimEl(ov, anim, kind, textNode);
     if (!el) return;
     el.style.setProperty('--tly-hi-duration', dur);
     el.style.animationDuration = dur;
     el.style.animationDelay = delay;
     el.style.animationIterationCount = '1';
     el.style.animationFillMode = 'both';
+    if (anim === 'box-glow') {
+      var ringPath = ov.querySelector('.tourly-hi-ring-path');
+      if (ringPath) {
+        ringPath.style.setProperty('--tly-hi-duration', dur);
+        ringPath.style.animationDuration = dur;
+        ringPath.style.animationDelay = delay;
+        ringPath.style.animationIterationCount = '1';
+        ringPath.style.animationFillMode = 'both';
+      }
+    }
+    if (anim === 'sweep') {
+      var glowPath = ov.querySelector('.tourly-hi-ring-glow');
+      if (glowPath) {
+        glowPath.style.setProperty('--tly-hi-duration', dur);
+        glowPath.style.animationDuration = dur;
+        glowPath.style.animationDelay = delay;
+        glowPath.style.animationIterationCount = '1';
+        glowPath.style.animationFillMode = 'both';
+      }
+    }
   };
 
   TourController.prototype._measureHighlightForOverlay = function (node, ov) {
@@ -828,45 +959,113 @@
 
   TourController.prototype._restartHiAnim = function (ov) {
     var path = ov.querySelector('.tourly-hi-ring-path');
-    var ring = ov.querySelector('.tourly-hi-ring');
+    var glowPath = ov.querySelector('.tourly-hi-ring-glow');
+    var glowWrap = ov.querySelector('.tourly-hi-ring-glow-wrap');
+    var halo = ov.querySelector('.tourly-hi-glow-halo');
+    var shell = ov.querySelector('.tourly-hi-ring-shell');
+    function resetAnim(el) {
+      if (!el) return;
+      el.style.animation = 'none';
+      el.style.opacity = '';
+      void el.offsetWidth;
+      el.style.animation = '';
+    }
     if (path) {
-      path.style.animation = 'none';
-      path.style.opacity = '';
       path.style.strokeDashoffset = '';
       path.removeAttribute('stroke-dashoffset');
-      void path.offsetWidth;
-      path.style.animation = '';
+      path.style.filter = '';
     }
-    if (ring) {
-      ring.style.animation = 'none';
-      void ring.offsetWidth;
-      ring.style.animation = '';
+    resetAnim(path);
+    resetAnim(glowPath);
+    resetAnim(glowWrap);
+    resetAnim(halo);
+    resetAnim(shell);
+  };
+
+  TourController.prototype._ensureHiOuterClip = function (svg, clipId, innerW, innerH, inset, iw, ih, radii, stroke) {
+    var defs = svg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS(SVG_NS, 'defs');
+      svg.insertBefore(defs, svg.firstChild);
     }
+    var clip = defs.querySelector('#' + clipId);
+    if (!clip) {
+      clip = document.createElementNS(SVG_NS, 'clipPath');
+      clip.setAttribute('id', clipId);
+      clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
+      var cp = document.createElementNS(SVG_NS, 'path');
+      cp.setAttribute('class', 'tourly-hi-outer-clip');
+      clip.appendChild(cp);
+      defs.appendChild(clip);
+    }
+    var cpPath = clip.querySelector('path');
+    var clipD = outerAnnulusClipD(innerW, innerH, inset, iw, ih, radii, stroke);
+    if (cpPath.getAttribute('d') !== clipD) {
+      cpPath.setAttribute('d', clipD);
+      cpPath.setAttribute('fill-rule', 'evenodd');
+    }
+    return clipId;
   };
 
   TourController.prototype._ensureHiRing = function (ov) {
-    var svg = ov.querySelector('.tourly-hi-ring');
+    var legacyRing = ov.querySelector(':scope > .tourly-hi-ring');
+    if (legacyRing) legacyRing.parentNode.removeChild(legacyRing);
+    var shell = ov.querySelector('.tourly-hi-ring-shell');
+    if (!shell) {
+      shell = el('div', 'tourly-hi-ring-shell');
+      ov.appendChild(shell);
+    }
+    var halo = shell.querySelector('.tourly-hi-glow-halo');
+    if (!halo) {
+      halo = el('div', 'tourly-hi-glow-halo');
+      shell.appendChild(halo);
+    }
+    var svg = shell.querySelector('.tourly-hi-ring');
     if (!svg) {
       svg = document.createElementNS(SVG_NS, 'svg');
       svg.setAttribute('class', 'tourly-hi-ring');
       svg.setAttribute('aria-hidden', 'true');
       var path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('class', 'tourly-hi-ring-path');
+      var glowWrap = document.createElementNS(SVG_NS, 'g');
+      glowWrap.setAttribute('class', 'tourly-hi-ring-glow-wrap');
+      var glowPath = document.createElementNS(SVG_NS, 'path');
+      glowPath.setAttribute('class', 'tourly-hi-ring-glow');
+      glowWrap.appendChild(glowPath);
+      svg.appendChild(glowWrap);
       svg.appendChild(path);
-      ov.appendChild(svg);
+      shell.appendChild(svg);
     }
-    return svg;
+    var glowPathLegacy = svg.querySelector('.tourly-hi-ring-glow');
+    var glowWrapCheck = svg.querySelector('.tourly-hi-ring-glow-wrap');
+    if (glowPathLegacy && !glowWrapCheck) {
+      glowWrapCheck = document.createElementNS(SVG_NS, 'g');
+      glowWrapCheck.setAttribute('class', 'tourly-hi-ring-glow-wrap');
+      svg.insertBefore(glowWrapCheck, glowPathLegacy);
+      glowWrapCheck.appendChild(glowPathLegacy);
+    }
+    return shell;
   };
 
-  TourController.prototype._layoutHiRing = function (ov, m) {
-    var svg = this._ensureHiRing(ov);
-    var w = Math.max(0, m.rect.width + m.pad * 2);
-    var h = Math.max(0, m.rect.height + m.pad * 2);
+  TourController.prototype._layoutHiRing = function (ov, m, anim) {
+    var shell = this._ensureHiRing(ov);
+    var svg = shell.querySelector('.tourly-hi-ring');
+    var outset = hiRingOutset(anim);
+    var innerW = Math.max(0, m.rect.width + m.pad * 2);
+    var innerH = Math.max(0, m.rect.height + m.pad * 2);
+    shell.style.display = '';
+    shell.style.left = outset + 'px';
+    shell.style.top = outset + 'px';
+    shell.style.width = Math.round(innerW) + 'px';
+    shell.style.height = Math.round(innerH) + 'px';
+    shell.style.borderRadius = m.radii.css;
     var inset = m.stroke / 2;
-    var iw = Math.max(0, w - m.stroke);
-    var ih = Math.max(0, h - m.stroke);
-    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    var iw = Math.max(0, innerW - m.stroke);
+    var ih = Math.max(0, innerH - m.stroke);
+    svg.setAttribute('viewBox', '0 0 ' + innerW + ' ' + innerH);
     var path = svg.querySelector('.tourly-hi-ring-path');
+    var glowWrap = svg.querySelector('.tourly-hi-ring-glow-wrap');
+    var glowPath = svg.querySelector('.tourly-hi-ring-glow');
     var d = roundedRectPath(inset, inset, iw, ih, m.radii.tl, m.radii.tr, m.radii.br, m.radii.bl);
     if (path.getAttribute('d') !== d) path.setAttribute('d', d);
     var len = path.getTotalLength();
@@ -875,17 +1074,64 @@
     if (path.getAttribute('stroke-dasharray') !== String(len)) {
       path.setAttribute('stroke-dasharray', String(len));
     }
+    if (glowPath && glowWrap) {
+      if (hiRingUsesGlowPath(anim)) {
+        if (!ov._hiClipId) ov._hiClipId = 'tlyclip-' + Math.random().toString(36).slice(2, 9);
+        this._ensureHiOuterClip(svg, ov._hiClipId, innerW, innerH, inset, iw, ih, m.radii, m.stroke);
+        glowWrap.setAttribute('clip-path', 'url(#' + ov._hiClipId + ')');
+        var cx = innerW / 2;
+        var cy = innerH / 2;
+        var tf = 'translate(' + cx + ' ' + cy + ') scale(' + HI_SWEEP_GLOW_SCALE + ') translate(' + (-cx) + ' ' + (-cy) + ')';
+        if (glowWrap.getAttribute('transform') !== tf) glowWrap.setAttribute('transform', tf);
+        if (glowPath.getAttribute('d') !== d) glowPath.setAttribute('d', d);
+        glowPath.style.setProperty('--tly-hi-perimeter', String(len));
+        glowPath.style.setProperty('--tly-hi-perimeter-neg', String(-len));
+        if (glowPath.getAttribute('stroke-dasharray') !== String(len)) {
+          glowPath.setAttribute('stroke-dasharray', String(len));
+        }
+        glowWrap.style.display = '';
+        glowPath.style.display = '';
+      } else {
+        glowWrap.removeAttribute('clip-path');
+        glowWrap.removeAttribute('transform');
+        glowWrap.style.display = 'none';
+        glowPath.style.display = 'none';
+      }
+    }
+    var halo = shell.querySelector('.tourly-hi-glow-halo');
+    if (halo) halo.style.display = hiRingUsesGlowHalo(anim) ? '' : 'none';
     svg.style.display = '';
   };
 
   TourController.prototype._clearHiTargetById = function (id) {
-    var node = this._hiTargetNodes[id];
-    if (!node) return;
-    HI_ANIM_CLASSES.forEach(function (c) { node.classList.remove(c); });
-    node.classList.remove('tourly-hi-target-text');
-    node.style.removeProperty('--tly-hi-color');
-    node.style.animation = '';
+    var nodes = this._hiTargetNodes[id];
+    if (!nodes) return;
+    var list = Array.isArray(nodes) ? nodes : [nodes];
+    var origs = this._hiTargetOrig && this._hiTargetOrig[id];
+    var multi = Array.isArray(origs);
+    for (var i = 0; i < list.length; i++) {
+      var node = list[i];
+      HI_ANIM_CLASSES.forEach(function (c) { node.classList.remove(c); });
+      node.classList.remove('tourly-hi-target-text', 'tourly-hi-target-text-glow');
+      node.style.removeProperty('--tly-hi-color');
+      node.style.animation = '';
+      node.style.textShadow = '';
+      var orig = multi ? origs[i] : (i === 0 ? origs : null);
+      if (orig) {
+        if (orig.color != null) node.style.color = orig.color || '';
+        if (orig.position != null) node.style.position = orig.position || '';
+        if (orig.zIndex != null) node.style.zIndex = orig.zIndex || '';
+        if (orig.textShadow != null) node.style.textShadow = orig.textShadow || '';
+        else node.style.removeProperty('text-shadow');
+      } else {
+        node.style.removeProperty('color');
+        node.style.removeProperty('position');
+        node.style.removeProperty('z-index');
+        node.style.removeProperty('text-shadow');
+      }
+    }
     delete this._hiTargetNodes[id];
+    if (this._hiTargetOrig) delete this._hiTargetOrig[id];
     if (this._hiTargetStyleKey) delete this._hiTargetStyleKey[id];
   };
 
@@ -895,21 +1141,52 @@
   };
 
   TourController.prototype._applyHiTarget = function (h, m, anim) {
-    if (!m || !m.textLike) return;
+    if (!m || !m.textLike || anim === 'text-glow') return;
     var node = m.node;
     var span = this._hiSpan(h);
     var styleKey = anim + '|' + (h.color || '#ff4d8d') + '|' + span.toFixed(2);
     var prev = this._hiTargetNodes[h.id];
-    if (prev && prev !== node) this._clearHiTargetById(h.id);
+    if (prev && (Array.isArray(prev) || prev !== node)) this._clearHiTargetById(h.id);
     if (this._hiTargetStyleKey[h.id] === styleKey && prev === node) return;
     this._hiTargetStyleKey[h.id] = styleKey;
     HI_ANIM_CLASSES.forEach(function (c) { node.classList.remove(c); });
-    node.classList.add('tourly-hi-target-text', 'tourly-hi-anim-' + anim);
+    node.classList.add('tourly-hi-target-text');
+    node.classList.remove('tourly-hi-target-text-glow');
+    node.classList.add('tourly-hi-anim-' + anim);
     node.style.setProperty('--tly-hi-color', h.color || '#ff4d8d');
     node.style.animation = 'none';
     void node.offsetWidth;
     node.style.animation = '';
     this._hiTargetNodes[h.id] = node;
+  };
+
+  TourController.prototype._applyHiTextGlow = function (h, m) {
+    if (!m || !m.node) return;
+    var targets = textGlowTargets(m.node);
+    if (!targets.length) return;
+    var span = this._hiSpan(h);
+    var styleKey = 'text-glow|' + (h.color || '#ff4d8d') + '|' + span.toFixed(2);
+    var prev = this._hiTargetNodes[h.id];
+    if (prev && (!Array.isArray(prev) || prev.length !== targets.length || prev[0] !== targets[0])) {
+      this._clearHiTargetById(h.id);
+      prev = null;
+    }
+    if (this._hiTargetStyleKey[h.id] === styleKey && Array.isArray(prev) && prev.length === targets.length) return;
+    if (prev) this._clearHiTargetById(h.id);
+    this._hiTargetStyleKey[h.id] = styleKey;
+    var origs = [];
+    for (var i = 0; i < targets.length; i++) {
+      var node = targets[i];
+      HI_ANIM_CLASSES.forEach(function (c) { node.classList.remove(c); });
+      node.classList.add('tourly-hi-target-text', 'tourly-hi-target-text-glow', 'tourly-hi-anim-text-glow');
+      node.style.setProperty('--tly-hi-color', h.color || '#ff4d8d');
+      origs.push({ textShadow: node.style.textShadow || '' });
+      node.style.animation = 'none';
+      void node.offsetWidth;
+      node.style.animation = '';
+    }
+    this._hiTargetNodes[h.id] = targets;
+    this._hiTargetOrig[h.id] = origs;
   };
 
   TourController.prototype._layoutHiOverlay = function (h, ov, anim) {
@@ -923,28 +1200,45 @@
     var m = this._measureHighlightForOverlay(node, ov);
     var pad = m.pad;
     var r = m.rect;
-    if (m.textLike) {
-      var ringHide = ov.querySelector('.tourly-hi-ring');
-      if (ringHide) ringHide.style.display = 'none';
+    var ringOut = hiRingOutset(anim);
+    if (anim === 'text-glow') {
+      if (!nodeHasTextContent(node)) {
+        this._clearHiTargetById(h.id);
+        ov.style.display = 'none';
+        ov._hiMode = null;
+        return null;
+      }
+      ov._hiMode = 'text-glow';
+      var shellHide = ov.querySelector('.tourly-hi-ring-shell');
+      if (shellHide) shellHide.style.display = 'none';
       ov.style.display = 'none';
       return m;
     }
-    this._clearHiTargetById(h.id);
+    var usesRing = anim === 'box-glow' || anim === 'outline' || anim === 'sweep' || anim === 'pulse' || !m.textLike;
+    if (m.textLike && !usesRing) {
+      ov._hiMode = 'text';
+      var shellHide = ov.querySelector('.tourly-hi-ring-shell');
+      if (shellHide) shellHide.style.display = 'none';
+      ov.style.display = 'none';
+      return m;
+    }
+    if (ov._hiMode !== 'ring') {
+      this._clearHiTargetById(h.id);
+      ov._hiMode = 'ring';
+    }
     ov.style.display = 'block';
-    ov.style.left = Math.round(r.left - pad) + 'px';
-    ov.style.top = Math.round(r.top - pad) + 'px';
-    ov.style.width = Math.round(Math.max(0, r.width + pad * 2)) + 'px';
-    ov.style.height = Math.round(Math.max(0, r.height + pad * 2)) + 'px';
-    ov.style.borderRadius = m.radii.css;
+    ov.style.left = Math.round(r.left - pad - ringOut) + 'px';
+    ov.style.top = Math.round(r.top - pad - ringOut) + 'px';
+    ov.style.width = Math.round(Math.max(0, r.width + pad * 2 + ringOut * 2)) + 'px';
+    ov.style.height = Math.round(Math.max(0, r.height + pad * 2 + ringOut * 2)) + 'px';
+    ov.style.removeProperty('border-radius');
     ov.style.setProperty('--tly-hi-stroke', String(m.stroke));
-    var ring = ov.querySelector('.tourly-hi-ring');
-    if (ring) ring.style.display = '';
-    var width = Math.round(Math.max(0, r.width + pad * 2));
-    var height = Math.round(Math.max(0, r.height + pad * 2));
-    var layoutKey = [width, height, Math.round(m.radii.tl), Math.round(m.radii.tr), Math.round(m.radii.br), Math.round(m.radii.bl)].join('|');
+    var width = Math.round(Math.max(0, r.width + pad * 2 + ringOut * 2));
+    var height = Math.round(Math.max(0, r.height + pad * 2 + ringOut * 2));
+    var layoutKey = [anim, width, height, Math.round(m.radii.tl), Math.round(m.radii.tr), Math.round(m.radii.br), Math.round(m.radii.bl)].join('|');
     if (ov._hiLayoutKey !== layoutKey) {
       ov._hiLayoutKey = layoutKey;
-      this._layoutHiRing(ov, m);
+      this._layoutHiRing(ov, m, anim);
     }
     return m;
   };
@@ -979,7 +1273,6 @@
         this._hiOverlays[h.id] = ov;
       }
       var color = h.color || '#ff4d8d';
-      var anim = (h.animation || 'pulse').replace(/\s+/g, '-');
       var node = this._queryTarget(h.target);
       if (!node) {
         ov.style.display = 'none';
@@ -988,6 +1281,7 @@
       }
       var m = this._measureHighlightForOverlay(node, ov);
       var kind = m.textLike ? 'text' : 'box';
+      var anim = resolveHiAnim((h.animation || 'pulse').replace(/\s+/g, '-'), kind);
       var styleKey = this._hiStyleKey(h, kind, anim);
       var styleChanged = ov._hiStyleKey !== styleKey;
       if (styleChanged) {
@@ -999,7 +1293,19 @@
       }
       m = this._layoutHiOverlay(h, ov, anim);
       if (!m) continue;
-      if (m.textLike) {
+      if (anim === 'text-glow') {
+        if (styleChanged || !this._hiTargetNodes[h.id]) this._applyHiTextGlow(h, m);
+        if (styleChanged) {
+          var tgList = this._hiTargetList(h.id);
+          for (var tgi = 0; tgi < tgList.length; tgi++) {
+            tgList[tgi].style.animation = 'none';
+            void tgList[tgi].offsetWidth;
+            tgList[tgi].style.animation = '';
+          }
+        }
+        var tg0 = this._hiTargetList(h.id)[0];
+        this._applyHiAnimTiming(ov, h, t, anim, kind, tg0, styleChanged);
+      } else if (m.textLike && anim !== 'box-glow') {
         if (styleChanged || !this._hiTargetNodes[h.id]) this._applyHiTarget(h, m, anim);
         this._applyHiAnimTiming(ov, h, t, anim, kind, m.node, styleChanged);
       } else {
@@ -1014,6 +1320,7 @@
         delete this._hiOverlays[id]._hiStyleKey;
         delete this._hiOverlays[id]._hiAnimTimed;
         delete this._hiOverlays[id]._hiAnimLastT;
+        delete this._hiOverlays[id]._hiMode;
       }
     }, this);
     this._hiActiveKey = activeKey;
@@ -1211,6 +1518,14 @@
     var y = this.resolveTargetY(pt.target);
     if (y != null) this._startTween(y, pt.ease != null ? pt.ease : DEFAULT_EASE, easingFn(pt.easing));
   };
+  TourController.prototype.isTextHighlightTarget = function (target) {
+    var node = this._queryTarget(target);
+    return !!(node && isTextLikeNode(node));
+  };
+  TourController.prototype.highlightTargetHasText = function (target) {
+    var node = this._queryTarget(target);
+    return nodeHasTextContent(node);
+  };
 
   // ---- events -------------------------------------------------------------
   TourController.prototype.on = function (evt, cb) { (this._listeners[evt] = this._listeners[evt] || []).push(cb); return this; };
@@ -1262,12 +1577,37 @@
 
   window.Tourly = Tourly;
 
+  function doMount(config) {
+    if (window.__TOURLY_MOUNTED__) return;
+    window.__TOURLY_MOUNTED__ = true;
+    try { Tourly.mount(config, { mode: 'live' }); }
+    catch (e) { console.error('[Tourly] mount failed:', e); }
+  }
+
+  // Concise export mode: a script tag with a data-tourly-id attribute and no inline config —
+  // fetched by id at load time instead. Silent no-op on any failure (offline backend, deleted
+  // tour, etc.) — a page must never break because a tour couldn't load.
+  // NOTE: this whole file is inlined verbatim into self-contained exports inside a real script
+  // element — never write a literal closing script tag anywhere in this file, comments included
+  // (e.g. spell it out in prose, or split it across a concatenation), or a browser's HTML parser
+  // will terminate the surrounding tag early and corrupt the page.
+  function fetchAndMount(tourId) {
+    var url = TOURLY_BACKEND.url + '/rest/v1/tours?id=eq.' + encodeURIComponent(tourId) + '&select=config';
+    fetch(url, { headers: { apikey: TOURLY_BACKEND.anonKey } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rows) {
+        var config = rows && rows[0] && rows[0].config;
+        if (config) doMount(config);
+      })
+      .catch(function () { /* offline/unreachable — silently skip, page still works */ });
+  }
+
   function autoMount() {
-    if (window.TOURLY_CONFIG && !window.__TOURLY_MOUNTED__) {
-      window.__TOURLY_MOUNTED__ = true;
-      try { Tourly.mount(window.TOURLY_CONFIG, { mode: 'live' }); }
-      catch (e) { console.error('[Tourly] mount failed:', e); }
-    }
+    if (window.__TOURLY_MOUNTED__) return;
+    if (window.TOURLY_CONFIG) { doMount(window.TOURLY_CONFIG); return; }
+    var ref = document.querySelector('script[data-tourly-id]');
+    var tourId = ref && ref.getAttribute('data-tourly-id');
+    if (tourId) fetchAndMount(tourId);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', autoMount);
   else autoMount();

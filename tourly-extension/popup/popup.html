@@ -24,6 +24,20 @@
     .muted { color: #8a90a0; font-size: 12px; }
     .sync-ok { color: #0a7d53; }
     .sync-err { color: #c0392b; }
+
+    .acct-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .acct-email { font-weight: 600; word-break: break-all; }
+    .acct-actions { display: flex; gap: 10px; margin-top: 6px; }
+    .acct-form { margin-top: 8px; }
+    .acct-form input { width: 100%; box-sizing: border-box; border: 1px solid #dfe3ea; border-radius: 6px; padding: 7px 9px; font: inherit; background: #fbfbfc; color: #1c1e24; }
+    .acct-form-row { display: flex; gap: 6px; margin-top: 6px; }
+    .acct-form-row input { flex: 1; }
+    button.secondary { background: #f3f4f7; border: 1px solid #dfe3ea; color: #1c1e24; border-radius: 6px; padding: 7px 10px; font: 600 12px system-ui; cursor: pointer; white-space: nowrap; }
+    button.secondary:hover { background: #e9ebf1; }
+    button.secondary:disabled { opacity: .5; cursor: default; }
+    .acct-hint { color: #8a90a0; font-size: 11px; margin-top: 5px; }
+    .acct-error { color: #c0392b; font-size: 11px; margin-top: 5px; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
@@ -39,8 +53,48 @@
     </div>
 
     <div class="sec">
-      <h2>Cloud sync</h2>
+      <h2>Account</h2>
       <div id="syncStatus" class="muted">Checking…</div>
+
+      <!-- anonymous: entry points into Flow A (add email) or Flow B (sign in elsewhere) -->
+      <div id="acctAnon" class="hidden">
+        <div class="acct-actions">
+          <span class="link" id="showAddEmail">Add email to back up your tours</span>
+        </div>
+        <div class="acct-actions">
+          <span class="link" id="showSignIn">Sign in to an existing account</span>
+        </div>
+      </div>
+
+      <!-- signed in: shows email + sign out -->
+      <div id="acctSignedIn" class="hidden">
+        <div class="acct-row">
+          <span class="acct-email" id="acctEmail"></span>
+          <button class="secondary" id="signOut">Sign out</button>
+        </div>
+      </div>
+
+      <!-- shared email -> code form, relabelled per mode -->
+      <div id="acctForm" class="acct-form hidden">
+        <div id="acctFormTitle" class="muted"></div>
+        <div id="acctEmailStep">
+          <div class="acct-form-row">
+            <input type="email" id="acctEmailInput" placeholder="you@example.com" />
+            <button class="secondary" id="acctSendCode">Send code</button>
+          </div>
+        </div>
+        <div id="acctCodeStep" class="hidden">
+          <div class="acct-form-row">
+            <input type="text" inputmode="numeric" maxlength="6" id="acctCodeInput" placeholder="6-digit code" />
+            <button class="secondary" id="acctVerifyCode">Confirm</button>
+          </div>
+          <div class="acct-hint">Check your email for the code.</div>
+        </div>
+        <div id="acctError" class="acct-error hidden"></div>
+        <div class="acct-actions">
+          <span class="link" id="acctCancel">Cancel</span>
+        </div>
+      </div>
     </div>
   </div>
   <script src="popup.js"></script>
