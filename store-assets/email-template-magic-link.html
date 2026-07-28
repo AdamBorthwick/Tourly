@@ -1,0 +1,63 @@
+<!-- Supabase → Authentication → Email Templates → "Magic Link" -->
+<!-- Paste this whole block as the template body. Subject line suggestion:
+     Sign in to Tourly -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f6f7fb;padding:32px 16px;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background-color:#ffffff;border-radius:12px;border:1px solid #e3e6f0;overflow:hidden;">
+        <tr>
+          <td style="height:4px;background-color:#4e5ffd;font-size:0;line-height:0;">&nbsp;</td>
+        </tr>
+        <tr>
+          <td style="padding:32px 36px 8px 36px;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="width:24px;height:24px;background-color:#4e5ffd;border-radius:6px;font-size:0;line-height:0;">&nbsp;</td>
+                <td style="padding-left:9px;font:700 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1b1e27;">
+                  Tour<span style="color:#4e5ffd;">ly</span>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 36px 0 36px;font:700 22px -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1b1e27;">
+            Sign in to Tourly
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:10px 36px 0 36px;font:400 15px/1.6 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#5b6478;">
+            Enter this code in Tourly to sign in to your account and pick up your saved tours.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:22px 36px 4px 36px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef0ff;border-radius:10px;">
+              <tr>
+                <td align="center" style="padding:18px 12px;font:700 32px/1 ui-monospace,'SF Mono',Consolas,monospace;letter-spacing:8px;color:#4e5ffd;">
+                  {{ .Token }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 36px 0 36px;font:400 13px/1.6 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#8a90a0;">
+            This code expires shortly. If you didn't request this, you can safely ignore this email — your account is unaffected.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:26px 36px 28px 36px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e3e6f0;">
+              <tr>
+                <td style="padding-top:16px;font:400 12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#8a90a0;">
+                  Sent by Tourly
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>

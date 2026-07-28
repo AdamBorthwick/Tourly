@@ -24,12 +24,11 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 function loadSupabaseConfig() {
   if (_cfgReady) return _cfgReady;
   _cfgReady = (async function () {
-    // Prefer cached config (survives service-worker restarts).
-    var cached = await storageGet(SB_CFG_KEY);
-    if (cached && cached.url && cached.anonKey) {
-      TOURLY_SUPABASE = cached;
-      return TOURLY_SUPABASE;
-    }
+    // The on-disk file is always authoritative — it's a fast local resource fetch, not a
+    // network call, so there's no real cost to re-reading it every time. The cache exists only
+    // as a fallback if that fetch ever fails, NOT as a way to avoid re-reading the file: a stale
+    // cache silently overriding a since-updated supabase-config.js (e.g. after switching Supabase
+    // projects) is exactly the bug this used to have.
     try {
       var res = await fetch(chrome.runtime.getURL('supabase-config.js'));
       var code = await res.text();
@@ -40,7 +39,13 @@ function loadSupabaseConfig() {
         await storageSet({ [SB_CFG_KEY]: TOURLY_SUPABASE });
         return TOURLY_SUPABASE;
       }
-    } catch (e) { /* fall through */ }
+    } catch (e) { /* fall through to cache below */ }
+
+    var cached = await storageGet(SB_CFG_KEY);
+    if (cached && cached.url && cached.anonKey) {
+      TOURLY_SUPABASE = cached;
+      return TOURLY_SUPABASE;
+    }
     return null;
   })();
   return _cfgReady;
@@ -107,6 +112,18 @@ async function ensureSession() {
   if (!cfg) return null;
 
   let session = await storageGet(SESSION_KEY);
+  // A session is only valid for the Supabase project that issued it — its access/refresh tokens
+  // are signed with that project's own keys. If the configured project has changed since this
+  // session was cached (e.g. switching Supabase projects), it's unusable here at all: reusing the
+  // access_token fails signature verification ("unrecognized JWT kid"), and refreshing against a
+  // different project's /token endpoint fails too. Discard it outright rather than attempting
+  // either path. A session with NO recorded url at all (cached before this check existed) is
+  // treated the same as a mismatch — its provenance is unknown, so it can't be trusted either.
+  if (session && session.url !== cfg.url) {
+    session = null;
+    await storageSet({ [SESSION_KEY]: null });
+  }
+
   const now = Math.floor(Date.now() / 1000);
   if (session && session.access_token && session.expires_at > now + 60) return session;
 
@@ -133,7 +150,7 @@ async function signInAnonymously(cfg) {
       lastAuthError = (data && (data.msg || data.message || data.error_description || data.error)) || ('HTTP ' + res.status);
       return null;
     }
-    const session = await persistSession(data);
+    const session = await persistSession(data, cfg.url);
     if (!session) lastAuthError = 'Sign-in succeeded but no access token in response';
     return session;
   } catch (e) {
@@ -151,11 +168,11 @@ async function refreshSession(cfg, refreshToken) {
     });
     const data = await res.json();
     if (!res.ok) return null;
-    return await persistSession(data);
+    return await persistSession(data, cfg.url);
   } catch (e) { return null; }
 }
 
-async function persistSession(data) {
+async function persistSession(data, projectUrl) {
   if (!data) return null;
   // GoTrue may return tokens at the root or nested under session (newer API shapes).
   var tok = data.access_token || (data.session && data.session.access_token);
@@ -167,6 +184,7 @@ async function persistSession(data) {
     access_token: tok,
     refresh_token: refresh,
     expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+    url: projectUrl, // which project issued this session — see the check in ensureSession()
     user_id: user && user.id,
     email: (user && user.email) || null,
     is_anonymous: !!(user && user.is_anonymous)
@@ -288,7 +306,7 @@ async function authVerifyCode(mode, email, token) {
     });
     const data = await res.json();
     if (!res.ok) return { ok: false, error: (data && (data.msg || data.message || data.error_code)) || ('HTTP ' + res.status) };
-    var session = await persistSession(data);
+    var session = await persistSession(data, cfg.url);
     if (!session) return { ok: false, error: 'Verified, but no session returned' };
     session = await refreshUserFields(cfg, session);
     return { ok: true, email: session.email, isAnonymous: session.is_anonymous };
