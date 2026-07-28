@@ -22,6 +22,9 @@ create index if not exists tours_user_idx on public.tours (user_id);
 create unique index if not exists tours_user_page_idx on public.tours (user_id, page_url);
 
 alter table public.tours enable row level security;
+-- Also force RLS for the table owner role, not just anon/authenticated (OWASP Multi-Tenant
+-- Security Cheat Sheet — defense-in-depth against any privileged-role bypass path).
+alter table public.tours force row level security;
 
 drop policy if exists "tourly own rows select" on public.tours;
 drop policy if exists "tourly own rows insert" on public.tours;

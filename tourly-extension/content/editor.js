@@ -9,10 +9,11 @@
   if (window.__tourlyEditor) { window.__tourlyEditor.toggle(); return; }
 
   var EDITOR_H = 220;
-  // Placeholder until you deploy cdn-worker/ (see its README) and paste the real URL into
-  // the Export tab. Exports never point straight at jsDelivr — always at this first-party URL,
-  // so the backend can change later without breaking anything already pasted into a site.
-  var DEFAULT_CDN = 'https://tourly-cdn.YOUR-SUBDOMAIN.workers.dev';
+  // Default export is a SINGLE self-contained <script> — engine.js and Player.js inlined
+  // alongside the tour config, so a pasted embed has zero external dependency and can never
+  // break if any CDN goes down. The deployed cdn-worker/ URL below only matters if the user
+  // opts into "hosted" mode (Export tab toggle) for centrally-updating many tours at once.
+  var DEFAULT_CDN = 'https://tourly-cdn.tourly567.workers.dev';
 
   // A tour's page identity must include the origin, not just the path — otherwise two different
   // sites sharing a path (e.g. two Webflow projects both at "/case-studies/acme") collide, both
@@ -23,6 +24,7 @@
   var store = {
     key: 'tourly:' + pageKey(),
     cdnKey: 'tourly:cdnUrl',
+    modeKey: 'tourly:exportMode',
     get: function (key, cb) {
       if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.get(key, function (r) { cb(r[key]); });
       else { try { cb(JSON.parse(localStorage.getItem(key) || 'null')); } catch (e) { cb(null); } }
@@ -37,7 +39,64 @@
   function uuid() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }); }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
-  function fmt(t) { t = Math.max(0, t || 0); var m = Math.floor(t / 60), s = (t % 60); return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1).replace('.', ':'); }
+  function fmt(t) {
+    t = Math.max(0, t || 0);
+    var m = Math.floor(t / 60);
+    var s = t - m * 60;
+    var sec = Math.floor(s);
+    var tenths = Math.round((s - sec) * 10);
+    var ss = sec < 10 ? '0' + sec : String(sec);
+    if (tenths > 0) return m + ':' + ss + '.' + tenths;
+    return m + ':' + ss;
+  }
+
+  function parseTimecode(str) {
+    if (str == null || str === '') return 0;
+    str = String(str).trim();
+    if (/^\d+(\.\d+)?$/.test(str)) return Math.max(0, parseFloat(str));
+    var parts = str.split(':');
+    if (parts.length === 1) return Math.max(0, parseFloat(parts[0]) || 0);
+    var m = parseInt(parts[0], 10) || 0;
+    var s = parseFloat(String(parts[1]).replace(',', '.')) || 0;
+    return Math.max(0, m * 60 + s);
+  }
+
+  function timeInput(initial, onchange) {
+    var inp = h('input', {
+      class: 'tly-timecode',
+      type: 'text',
+      inputMode: 'decimal',
+      spellcheck: 'false',
+      value: fmt(initial),
+      onchange: function () {
+        var v = parseTimecode(inp.value);
+        inp.value = fmt(v);
+        onchange(v);
+      },
+      onblur: function () {
+        inp.value = fmt(parseTimecode(inp.value));
+      }
+    });
+    inp.setFormatted = function (t) { inp.value = fmt(t); };
+    return inp;
+  }
+
+  function editorTypeTitle(kind, label) {
+    var icon = kind === 'highlight' ? ICON_HIGHLIGHT_SVG : kind === 'subtitle' ? ICON_SUBTITLE_SVG : ICON_SCROLL_SVG;
+    var cls = 'tly-pe-title' + (kind === 'highlight' ? ' tly-pe-title-hi' : '');
+    return h('span', {
+      class: cls,
+      html: '<span class="tly-pe-title-icon" aria-hidden="true">' + icon + '</span><span class="tly-pe-title-text">' + label + '</span>'
+    });
+  }
+
+  function deleteBtn(onclick) {
+    return h('button', {
+      class: 'tly-btn tly-mini tly-danger tly-btn-delete',
+      html: '<span class="tly-btn-text">Delete</span><span class="tly-btn-icon" aria-hidden="true">' + ICON_TRASH_SVG + '</span>',
+      onclick: onclick
+    });
+  }
   function h(tag, props, kids) {
     var e = document.createElement(tag);
     if (props) for (var k in props) {
@@ -131,6 +190,45 @@
   // ---- state ----
   var ED = {};
   var config = null, engine = null, duration = 0, cdnUrl = DEFAULT_CDN;
+  // 'concise' (default): <script data-tourly-id src="cdnUrl/engine.js"> — tiny, always current,
+  // needs the backend live at page-load. 'self-contained': everything inlined, zero dependency,
+  // larger snippet. See snippet().
+  var exportMode = 'concise';
+  var embedSources = { engine: null, playerjs: null, loading: false };
+
+  // Fetch the raw source of engine.js + Player.js once, so the default export can inline them
+  // into a single <script> with zero external dependency. Extension context reads its own
+  // bundled files directly; the dev-server harness fetches the equivalent local paths.
+  function loadEmbedSources(cb) {
+    if (embedSources.engine && embedSources.playerjs) { cb(embedSources); return; }
+    if (embedSources.loading) { embedSources._waiters = (embedSources._waiters || []).concat(cb); return; }
+    embedSources.loading = true;
+    embedSources._waiters = [cb];
+    var engineUrl, playerjsUrl;
+    if (window.chrome && chrome.runtime && chrome.runtime.getURL) {
+      engineUrl = chrome.runtime.getURL('content/engine.js');
+      playerjsUrl = chrome.runtime.getURL('lib/playerjs.min.js');
+    } else {
+      engineUrl = '/engine.js';
+      playerjsUrl = '/tourly-extension/lib/playerjs.min.js';
+    }
+    Promise.all([
+      fetch(engineUrl).then(function (r) { return r.text(); }),
+      fetch(playerjsUrl).then(function (r) { return r.text(); })
+    ]).then(function (res) {
+      embedSources.engine = res[0];
+      embedSources.playerjs = res[1];
+      embedSources.loading = false;
+      var waiters = embedSources._waiters || [];
+      embedSources._waiters = [];
+      waiters.forEach(function (w) { w(embedSources); });
+    }).catch(function () {
+      embedSources.loading = false;
+      var waiters = embedSources._waiters || [];
+      embedSources._waiters = [];
+      waiters.forEach(function (w) { w(null); });
+    });
+  }
   var activeTab = 'scroll';
   var pickContext = null; // { type: 'scroll'|'highlight', id: string }
   var previewActive = false;
@@ -140,6 +238,8 @@
   var draggingHighlight = false;
   var draggingCue = false;
   var lastScrubAt = 0;
+  var playheadScrubLockedUntil = 0;
+  var PLAYHEAD_SCRUB_COOLDOWN_MS = 280;
   var selectedPointId = null;
   var selectedCueId = null;
   var selectedHighlightId = null;
@@ -153,7 +253,29 @@
   var transcribing = false;
   var EXPAND_TABS = { theme: true, export: true };
   var DEFAULT_HIGHLIGHT_COLOR = '#ff4d8d';
-  var HIGHLIGHT_ANIMS = ['fade-in', 'sweep', 'pulse', 'glow'];
+  var HIGHLIGHT_ANIMS_COMMON = ['outline', 'sweep', 'pulse'];
+
+  function highlightAnimLabel(a) {
+    if (a === 'text-glow') return 'Text glow';
+    if (a === 'box-glow') return 'Box glow';
+    if (a === 'outline') return 'Outline';
+    if (a === 'fade-in') return 'Outline';
+    return a;
+  }
+
+  function highlightAnimsFor(hl) {
+    var anims = HIGHLIGHT_ANIMS_COMMON.slice();
+    var hasText = !engine || !engine.highlightTargetHasText || engine.highlightTargetHasText(hl.target);
+    if (hasText) anims.push('text-glow');
+    anims.push('box-glow');
+    return anims;
+  }
+
+  function normalizeHighlightAnim(hl) {
+    if (!hl) return;
+    if (hl.animation === 'glow') hl.animation = 'box-glow';
+    if (hl.animation === 'fade-in') hl.animation = 'outline';
+  }
 
   function newConfig() {
     return {
@@ -198,7 +320,7 @@
   function save() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
-      store.set(store.key, config); store.set(store.cdnKey, cdnUrl);
+      store.set(store.key, config); store.set(store.cdnKey, cdnUrl); store.set(store.modeKey, exportMode);
       if (cloud.configured) bg({ type: 'toursSave', tour: { id: config.id, name: config.name, page_url: config.pageUrl || pageKey(), config: config } });
     }, 300);
   }
@@ -297,6 +419,7 @@
   var ICON_HIGHLIGHT_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>';
   var ICON_SUBTITLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h12"/><path d="M6 14h8"/></svg>';
   var ICON_AUTO_SUB_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 14a3 3 0 003-3V6a3 3 0 00-6 0v5a3 3 0 003 3z"/><path d="M8 11v1a4 4 0 008 0v-1"/><path d="M12 18v3"/><path d="M8 21h8"/><path d="M18 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg>';
+  var ICON_TRASH_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
 
   function labeledIconBtn(className, title, iconHtml, label, onclick) {
     return h('button', {
@@ -311,7 +434,6 @@
     ED.root = h('div', { id: 'tourly-editor' });
 
     // slim header: brand + tabs inline (no tour name label)
-    ED.cloudNote = h('span', { class: 'tly-cloud', text: cloud.configured ? '☁ synced' : '' });
     ED.tabsBar = h('div', { class: 'tly-tabs' }, ['scroll', 'theme', 'export'].map(function (id) {
       return h('button', { class: 'tly-tab' + (id === activeTab ? ' tly-active' : ''), text: tabLabel(id), 'data-tab': id, onclick: function () { setTab(id); } });
     }));
@@ -319,8 +441,6 @@
       h('span', { class: 'tly-brand', html: 'Tour<span>ly</span>' }),
       ED.tabsBar,
       h('span', { class: 'tly-spacer' }),
-      ED.cloudNote,
-      h('button', { class: 'tly-btn tly-mini', text: 'Change video', onclick: showSetup }),
       h('button', { class: 'tly-close-editor', title: 'Hide editor', text: '×', onclick: function () { API.toggle(); } })
     ]);
 
@@ -343,7 +463,7 @@
     // timeline + transport (taller track)
     ED.previewBtn = h('button', { class: 'tly-btn tly-mini tly-icon-btn tly-btn-square', title: 'Preview tour from start', html: PREVIEW_EYE_SVG, onclick: startTourPreview });
     ED.playBtn = h('button', { class: 'tly-btn tly-mini tly-btn-square', text: '▶', onclick: togglePlay });
-    ED.timeLabel = h('span', { class: 'tly-time', text: '0:00:0 / 0:00:0' });
+    ED.timeLabel = h('span', { class: 'tly-time', text: '0:00 / 0:00' });
     // add buttons live in the transport; visibility flips with the active tab
     ED.addPointBtn = labeledIconBtn('tly-btn tly-primary tly-mini', 'Add a scroll point anchored to a page element', ICON_SCROLL_SVG, 'Add scroll point', addElementPoint);
     ED.addSubBtn = labeledIconBtn('tly-btn tly-primary tly-btn-sub tly-mini', 'Add subtitles at the playhead', ICON_SUBTITLE_SVG, 'Add subtitles', addSubtitleManual);
@@ -499,9 +619,14 @@
     var expand = !!EXPAND_TABS[id];
     ED.root.classList.toggle('tly-expanded', expand);
     ED.backdrop.classList.toggle('tly-hidden', !expand);
+    updateTabLayout();
     renderTimeline();      // scroll↔subtitle timeline layout depends on the active tab
     renderTabs();
     renderBottomEditor();
+  }
+
+  function updateTabLayout() {
+    if (ED.timeWrap) ED.timeWrap.classList.toggle('tly-hidden', activeTab === 'theme');
   }
 
   function bootstrapDefaultScroll() {
@@ -554,32 +679,28 @@
     ED.head.classList.toggle('tly-hidden', !hasVideo);   // hide slim header during setup (card has its own brand)
     ED.root.classList.toggle('tly-setup-mode', !hasVideo);
     if (!hasVideo) { ED.root.classList.remove('tly-expanded'); ED.backdrop.classList.add('tly-hidden'); }
-    if (hasVideo) { renderTimeline(); renderTabs(); renderBottomEditor(); bootstrapDefaultScroll(); }
-  }
-
-  function showSetup() {
-    ED.setupUrl.value = config.video.embedUrl || '';
-    ED.setupName.value = config.name && config.name !== 'Tour' ? config.name : '';
-    ED.setup.classList.remove('tly-hidden');
-    ED.editorBody.classList.add('tly-hidden');
-    ED.head.classList.add('tly-hidden');
-    ED.root.classList.add('tly-setup-mode');
+    if (hasVideo) { updateTabLayout(); renderTimeline(); renderTabs(); renderBottomEditor(); bootstrapDefaultScroll(); }
   }
 
   function tabLabel(id) {
-    return { scroll: 'Motion', theme: 'Theme', export: 'Export' }[id];
+    return { scroll: 'Editor', theme: 'Settings', export: 'Export' }[id];
+  }
+
+  function applyVideoChange(url, name) {
+    url = (url || '').trim();
+    if (!url) return false;
+    config.video.embedUrl = normalizeEmbedUrl(url);
+    config.video.videoId = parseVidzflow(url);
+    if (name && String(name).trim()) config.name = String(name).trim();
+    save();
+    mountEngine();
+    return true;
   }
 
   // ---- video load ----
   function loadVideo() {
-    var url = ED.setupUrl.value.trim();
-    if (!url) return;
-    config.video.embedUrl = normalizeEmbedUrl(url);
-    config.video.videoId = parseVidzflow(url);
-    if (ED.setupName.value.trim()) config.name = ED.setupName.value.trim();
-    save();
+    if (!applyVideoChange(ED.setupUrl.value, ED.setupName.value)) return;
     renderMode();      // reveal the editor body
-    mountEngine();
   }
 
   // ---- transport ----
@@ -692,6 +813,12 @@
 
   function startScrub(clientX) {
     if (!engine || !duration || !ED.track) return;
+    var now0 = (performance && performance.now) ? performance.now() : Date.now();
+    if (now0 < playheadScrubLockedUntil) return;
+    if (engine.state === 'playing') {
+      engine.pause();
+      if (ED.playBtn) ED.playBtn.textContent = '▶';
+    }
     function seekAt(cx, force) {
       var m = trackScrubMetrics();
       var ratio = m.contentW ? clamp((cx - m.rect.left - m.borderL) / m.contentW, 0, 1) : 0;
@@ -706,6 +833,7 @@
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
       seekAt(ev.clientX, true);
+      playheadScrubLockedUntil = (performance && performance.now ? performance.now() : Date.now()) + PLAYHEAD_SCRUB_COOLDOWN_MS;
     }
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
@@ -794,7 +922,7 @@
     el.style.width = Math.max(2, x2 - x1) + 'px';
     syncBarLabel(el, Math.max(2, x2 - x1));
     var ptName = isElementPoint(p) ? displayNameForTarget(p.target) : 'Scroll point';
-    el.title = ptName + ' @ ' + fmt(p.time) + ' · ' + fmt(scrollPointDuration(p)) + 's';
+    el.title = ptName + ' @ ' + fmt(p.time) + ' → ' + fmt(scrollPointEnd(p));
   }
 
   // ---- timeline markers ----
@@ -1402,8 +1530,8 @@
       layoutScrollPointEl(prev, prevEl, r.width);
       layoutScrollPointEl(next, nextEl, r.width);
       syncTrackLabelContrast();
-      if (ED.peStart) ED.peStart.value = p.time;
-      if (ED.peDur) ED.peDur.value = scrollPointDuration(p);
+      if (ED.peStart) ED.peStart.setFormatted(p.time);
+      if (ED.peEnd) ED.peEnd.setFormatted(scrollPointEnd(p));
     }
     function up() {
       document.removeEventListener('mousemove', move);
@@ -1678,8 +1806,8 @@
       layoutCueEl(prev, prevEl, r.width);
       layoutCueEl(next, nextEl, r.width);
       syncTrackLabelContrast();
-      if (ED.ceStart) ED.ceStart.value = c.start;
-      if (ED.ceEnd) ED.ceEnd.value = c.end;
+      if (ED.ceStart) ED.ceStart.setFormatted(c.start);
+      if (ED.ceEnd) ED.ceEnd.setFormatted(c.end);
     }
     function up() {
       document.removeEventListener('mousemove', move);
@@ -1780,8 +1908,8 @@
       layoutHiEl(prev, prevEl, r.width);
       layoutHiEl(next, nextEl, r.width);
       syncTrackLabelContrast();
-      if (ED.heStart) ED.heStart.value = hl.start;
-      if (ED.heEnd) ED.heEnd.value = hl.end;
+      if (ED.heStart) ED.heStart.setFormatted(hl.start);
+      if (ED.heEnd) ED.heEnd.setFormatted(hl.end);
     }
     function up() {
       document.removeEventListener('mousemove', move);
@@ -1958,7 +2086,7 @@
   // selected scroll-point editor, shown below the timeline
   function renderPointEditor() {
     if (!ED.pointEditor) return;
-    ED.peStart = ED.peDur = null;
+    ED.peStart = ED.peEnd = null;
     var p = selectedPointId && config.scrollPoints.filter(function (x) { return x.id === selectedPointId; })[0];
     if (!p) {
       renderBottomPlaceholder('Select scroll, highlight, or subtitle on the timeline — or use the add buttons above.');
@@ -1967,10 +2095,18 @@
     ED.pointEditor.classList.remove('tly-hidden');
     clearPointEditorBody();
     if (!p.target || p.target.mode !== 'element') p.target = elementTarget(null);
-    var startIn = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: p.time, onchange: function () { p.time = +startIn.value; config.scrollPoints.sort(function (a, b) { return a.time - b.time; }); save(); refreshPreview(); renderTimeline(); } });
+    var startIn = timeInput(p.time, function (v) {
+      p.time = v;
+      if (scrollPointDuration(p) < CUE_MIN_DUR) p.ease = CUE_MIN_DUR;
+      config.scrollPoints.sort(function (a, b) { return a.time - b.time; });
+      save(); refreshPreview(); renderTimeline();
+    });
     ED.peStart = startIn;
-    var durIn = h('input', { class: 'tly-num', type: 'number', step: '0.1', min: '0', value: scrollPointDuration(p), onchange: function () { p.ease = +durIn.value; save(); refreshPreview(); renderTimeline(); } });
-    ED.peDur = durIn;
+    var endIn = timeInput(scrollPointEnd(p), function (v) {
+      p.ease = Math.max(CUE_MIN_DUR, +(v - p.time).toFixed(2));
+      save(); refreshPreview(); renderTimeline();
+    });
+    ED.peEnd = endIn;
     var easeSel = h('select', { class: 'tly-sel', onchange: function () { p.easing = easeSel.value; save(); refreshPreview(); } },
       [['ease', 'Ease (in-out)'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out']].map(function (o) { var op = h('option', { value: o[0], text: o[1] }); if ((p.easing || 'ease') === o[0]) op.selected = true; return op; }));
     var anchorSel = h('select', { class: 'tly-sel', onchange: function () { p.target.viewportAnchor = anchorSel.value; save(); refreshPreview(); } },
@@ -1982,14 +2118,14 @@
       text: isElementPoint(p) ? elName : 'No element — pick one'
     });
     ED.pointEditorBody.appendChild(h('div', { class: 'tly-pe-row' }, [
-      h('span', { class: 'tly-pe-title', text: 'Scroll point' }),
-      h('span', { class: 'tly-muted', text: 'start' }), startIn,
-      h('span', { class: 'tly-muted', text: 'duration' }), durIn,
+      editorTypeTitle('scroll', 'Scroll point'),
+      h('span', { class: 'tly-muted', text: 'Start' }), startIn,
+      h('span', { class: 'tly-muted', text: 'End point' }), endIn,
       h('span', { class: 'tly-muted', text: 'animation' }), easeSel,
       anchorSel,
       tag,
       h('span', { class: 'tly-grow' }),
-      h('button', { class: 'tly-btn tly-mini tly-danger', text: 'Delete', onclick: function () { deletePoint(p.id); } })
+      deleteBtn(function () { deletePoint(p.id); })
     ]));
   }
 
@@ -2183,13 +2319,24 @@
     }
     ED.pointEditor.classList.remove('tly-hidden');
     clearPointEditorBody();
-    var s = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: hl.start, onchange: function () { hl.start = +s.value; config.highlights.sort(function (a, b) { return a.start - b.start; }); save(); refreshPreview(); renderTimeline(); } });
-    var e = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: hl.end, onchange: function () { hl.end = +e.value; save(); refreshPreview(); renderTimeline(); } });
+    var s = timeInput(hl.start, function (v) {
+      hl.start = v;
+      config.highlights.sort(function (a, b) { return a.start - b.start; });
+      save(); refreshPreview(); renderTimeline();
+    });
+    var e = timeInput(hl.end, function (v) {
+      hl.end = v;
+      save(); refreshPreview(); renderTimeline();
+    });
     var col = h('input', { class: 'tly-color', type: 'color', value: hl.color || DEFAULT_HIGHLIGHT_COLOR, oninput: function () { hl.color = col.value; save(); refreshPreview(); renderTimeline(); } });
+    normalizeHighlightAnim(hl);
+    var animOptions = highlightAnimsFor(hl);
+    var currentAnim = hl.animation || 'pulse';
+    if (animOptions.indexOf(currentAnim) < 0) animOptions = animOptions.concat([currentAnim]);
     var animSel = h('select', { class: 'tly-sel', onchange: function () { hl.animation = animSel.value; save(); refreshPreview(); } },
-      HIGHLIGHT_ANIMS.map(function (a) {
-        var op = h('option', { value: a, text: a });
-        if ((hl.animation || 'pulse') === a) op.selected = true;
+      animOptions.map(function (a) {
+        var op = h('option', { value: a, text: highlightAnimLabel(a) });
+        if (currentAnim === a) op.selected = true;
         return op;
       }));
     var elName = displayNameForTarget(hl.target);
@@ -2200,14 +2347,14 @@
     });
     ED.heStart = s; ED.heEnd = e;
     ED.pointEditorBody.appendChild(h('div', { class: 'tly-pe-row' }, [
-      h('span', { class: 'tly-pe-title tly-pe-title-hi', text: 'Highlight' }),
-      h('span', { class: 'tly-muted', text: 'start' }), s,
-      h('span', { class: 'tly-muted', text: 'end' }), e,
+      editorTypeTitle('highlight', 'Highlight'),
+      h('span', { class: 'tly-muted', text: 'Start' }), s,
+      h('span', { class: 'tly-muted', text: 'End' }), e,
       h('span', { class: 'tly-muted', text: 'color' }), col,
       h('span', { class: 'tly-muted', text: 'animation' }), animSel,
       tag,
       h('span', { class: 'tly-grow' }),
-      h('button', { class: 'tly-btn tly-mini tly-danger', text: 'Delete', onclick: function () { deleteHighlight(hl.id); } })
+      deleteBtn(function () { deleteHighlight(hl.id); })
     ]));
   }
 
@@ -2222,16 +2369,23 @@
     }
     ED.pointEditor.classList.remove('tly-hidden');
     clearPointEditorBody();
-    var s = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: c.start, onchange: function () { c.start = +s.value; config.subtitles.sort(function (a, b) { return a.start - b.start; }); save(); refreshPreview(); renderTimeline(); } });
-    var e = h('input', { class: 'tly-num', type: 'number', step: '0.1', value: c.end, onchange: function () { c.end = +e.value; save(); refreshPreview(); renderTimeline(); } });
+    var s = timeInput(c.start, function (v) {
+      c.start = v;
+      config.subtitles.sort(function (a, b) { return a.start - b.start; });
+      save(); refreshPreview(); renderTimeline();
+    });
+    var e = timeInput(c.end, function (v) {
+      c.end = v;
+      save(); refreshPreview(); renderTimeline();
+    });
     var txt = h('input', { class: 'tly-text', style: { flex: '1 1 200px', width: 'auto' }, value: c.text, oninput: function () { c.text = txt.value; save(); refreshPreview(); renderTimeline(); } });
     ED.ceStart = s; ED.ceEnd = e;
     ED.pointEditorBody.appendChild(h('div', { class: 'tly-pe-row' }, [
-      h('span', { class: 'tly-pe-title', text: 'Subtitle' }),
-      h('span', { class: 'tly-muted', text: 'start' }), s,
-      h('span', { class: 'tly-muted', text: 'end' }), e,
+      editorTypeTitle('subtitle', 'Subtitle'),
+      h('span', { class: 'tly-muted', text: 'Start' }), s,
+      h('span', { class: 'tly-muted', text: 'End' }), e,
       h('span', { class: 'tly-muted', text: 'text' }), txt,
-      h('button', { class: 'tly-btn tly-mini tly-danger', text: 'Delete', onclick: function () { deleteSubtitle(c.id); } })
+      deleteBtn(function () { deleteSubtitle(c.id); })
     ]));
   }
 
@@ -2269,6 +2423,21 @@
     }
     ED.banner.textContent = labelForElement(el) + ' · click to select · Esc to cancel';
   }
+  function pickHighlightRadius(el) {
+    var rect = el.getBoundingClientRect();
+    var cs = window.getComputedStyle(el);
+    var tl = parseFloat(cs.borderTopLeftRadius) || 0;
+    var tr = parseFloat(cs.borderTopRightRadius) || 0;
+    var br = parseFloat(cs.borderBottomRightRadius) || 0;
+    var bl = parseFloat(cs.borderBottomLeftRadius) || 0;
+    var maxR = Math.max(0, Math.min(rect.width, rect.height) / 2);
+    var bg = cs.backgroundColor || '';
+    var transparent = !bg || bg === 'transparent' || (bg.indexOf('rgba') >= 0 && parseFloat((bg.match(/[\d.]+\s*\)?$/) || ['1'])[0]) < 0.08);
+    if (transparent && (tl + tr + br + bl) < 1) tl = tr = br = bl = Math.min(8, maxR);
+    tl = Math.min(tl, maxR); tr = Math.min(tr, maxR); br = Math.min(br, maxR); bl = Math.min(bl, maxR);
+    return tl + 'px ' + tr + 'px ' + br + 'px ' + bl + 'px';
+  }
+
   function pickMove(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el || isOwn(el)) {
@@ -2277,7 +2446,37 @@
       return;
     }
     var r = el.getBoundingClientRect();
-    Object.assign(ED.pickOverlay.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    var isHi = pickContext && pickContext.type === 'highlight';
+    if (isHi) {
+      var pad = 3;
+      Object.assign(ED.pickOverlay.style, {
+        display: 'block',
+        left: (r.left - pad) + 'px',
+        top: (r.top - pad) + 'px',
+        width: (r.width + pad * 2) + 'px',
+        height: (r.height + pad * 2) + 'px',
+        background: 'transparent',
+        border: 'none',
+        outline: '2px solid #ff4d8d',
+        outlineOffset: '0px',
+        borderRadius: pickHighlightRadius(el),
+        boxShadow: 'none'
+      });
+    } else {
+      Object.assign(ED.pickOverlay.style, {
+        display: 'block',
+        left: r.left + 'px',
+        top: r.top + 'px',
+        width: r.width + 'px',
+        height: r.height + 'px',
+        background: 'rgba(37,99,235,.18)',
+        border: '2px solid var(--tly-scroll)',
+        outline: '',
+        outlineOffset: '',
+        borderRadius: '3px',
+        boxShadow: ''
+      });
+    }
     updatePickBanner(el);
   }
   function isOwn(el) {
@@ -2296,7 +2495,7 @@
       if (pickContext.id === 'new') {
         var t = Math.floor(engine.getTime() * 100) / 100;
         var hid = uuid();
-        config.highlights.push({ id: hid, start: t, end: +(t + 3).toFixed(2), color: DEFAULT_HIGHLIGHT_COLOR, animation: 'pulse', target: elementTarget(sel, 'center', label) });
+        config.highlights.push({ id: hid, start: t, end: +(t + 3).toFixed(2), color: DEFAULT_HIGHLIGHT_COLOR, animation: 'sweep', target: elementTarget(sel, 'center', label) });
         config.highlights.sort(function (a, b) { return a.start - b.start; });
         selectedHighlightId = hid;
         selectedPointId = null;
@@ -2368,6 +2567,35 @@
   }
 
   function renderThemeTab() {
+    var videoUrlIn = h('input', {
+      class: 'tly-url',
+      placeholder: 'Paste vidzflow embed URL…',
+      value: config.video.embedUrl || ''
+    });
+    var videoNameIn = h('input', {
+      class: 'tly-name',
+      style: { width: '100%', maxWidth: '320px' },
+      placeholder: 'Tour name (optional)',
+      value: config.name && config.name !== 'Tour' ? config.name : ''
+    });
+    var updateVideoBtn = h('button', {
+      class: 'tly-btn tly-primary',
+      text: 'Update video',
+      onclick: function () {
+        if (!applyVideoChange(videoUrlIn.value, videoNameIn.value)) return;
+        updateVideoBtn.textContent = 'Updated ✓';
+        setTimeout(function () { updateVideoBtn.textContent = 'Update video'; }, 1500);
+      }
+    });
+    ED.panel.appendChild(h('div', { class: 'tly-panel-section' }, [
+      h('div', { class: 'tly-panel-h', text: 'Tour video' }),
+      h('div', { class: 'tly-hint', text: 'Replace the vidzflow embed for this tour. Scroll points, highlights, and subtitles are kept — review timings if the new clip is a different length.' }),
+      h('div', { class: 'tly-settings-video-row' }, [
+        videoUrlIn,
+        h('div', { class: 'tly-row' }, [videoNameIn, updateVideoBtn])
+      ])
+    ]));
+
     var v = config.theme.video = config.theme.video || { radius: 8, width: 320, position: 'bottom-right', margin: 24 };
     function num(label, key, step) {
       var i = h('input', { class: 'tly-num', type: 'number', step: step || 1, value: v[key], onchange: function () { v[key] = +i.value; save(); refreshPreview(); } });
@@ -2375,34 +2603,80 @@
     }
     var posSel = h('select', { class: 'tly-sel', onchange: function () { v.position = posSel.value; save(); refreshPreview(); } },
       ['bottom-right', 'bottom-left', 'top-right', 'top-left', 'bottom-center'].map(function (p) { var o = h('option', { value: p, text: p }); if (v.position === p) o.selected = true; return o; }));
-    ED.panel.appendChild(num('Video width (px)', 'width'));
-    ED.panel.appendChild(num('Corner radius (px)', 'radius'));
-    ED.panel.appendChild(num('Margin (px)', 'margin'));
-    ED.panel.appendChild(h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'Position' }), posSel]));
-    ED.panel.appendChild(h('div', { class: 'tly-hint', text: 'More subtitle/notification styling coming next. Corner radius defaults to 8px.' }));
+    ED.panel.appendChild(h('div', { class: 'tly-panel-section' }, [
+      h('div', { class: 'tly-panel-h', text: 'Player appearance' }),
+      num('Video width (px)', 'width'),
+      num('Corner radius (px)', 'radius'),
+      num('Margin (px)', 'margin'),
+      h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'Position' }), posSel]),
+      h('div', { class: 'tly-hint', text: 'More subtitle/notification styling coming next. Corner radius defaults to 8px.' })
+    ]));
   }
 
   function renderExportTab() {
-    var isPlaceholder = !cdnUrl || cdnUrl.indexOf('YOUR-SUBDOMAIN') > -1;
-    var cdnIn = h('input', { class: 'tly-url', value: cdnUrl, placeholder: 'https://tourly-cdn.yoursubdomain.workers.dev', oninput: function () {
-      cdnUrl = cdnIn.value.trim() || DEFAULT_CDN; save(); ta.value = snippet(); warn.classList.toggle('tly-hidden', cdnUrl.indexOf('YOUR-SUBDOMAIN') === -1);
-    } });
     var ta = h('textarea', { class: 'tly-export', readonly: 'readonly' });
-    ta.value = snippet();
+    ta.value = 'Building embed…';
+
+    var isPlaceholder = !cdnUrl || cdnUrl.indexOf('YOUR-SUBDOMAIN') > -1;
+    var notSynced = !cloud.configured;
+
+    var cdnIn = h('input', { class: 'tly-url', value: cdnUrl, placeholder: 'https://tourly-cdn.yoursubdomain.workers.dev', oninput: function () {
+      cdnUrl = cdnIn.value.trim() || DEFAULT_CDN; save(); refreshSnippet();
+      cdnWarn.classList.toggle('tly-hidden', cdnUrl.indexOf('YOUR-SUBDOMAIN') === -1);
+    } });
+    var cdnRow = h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'CDN URL' }), cdnIn]);
+    var cdnWarn = h('div', { class: 'tly-hint tly-warn-text' + (isPlaceholder ? '' : ' tly-hidden'), text: '⚠ Deploy cdn-worker/ (see its README) and paste your real Worker URL above before publishing — this placeholder won’t load.' });
+    var syncWarn = h('div', { class: 'tly-hint tly-warn-text' + (notSynced ? '' : ' tly-hidden'), text: '⚠ Cloud sync isn’t connected — a concise embed fetches this tour by id at runtime, so it needs to be saved to the cloud first, or visitors will see nothing.' });
+
+    var modeSel = h('select', { class: 'tly-sel' }, [
+      h('option', { value: 'concise', text: 'Concise (recommended) — tiny snippet, fetches this tour live' }),
+      h('option', { value: 'self-contained', text: 'Self-contained — larger, works with zero external dependency' })
+    ]);
+    modeSel.value = exportMode;
+    modeSel.addEventListener('change', function () {
+      exportMode = modeSel.value; save();
+      cdnRow.classList.toggle('tly-hidden', exportMode !== 'concise');
+      syncWarn.classList.toggle('tly-hidden', exportMode !== 'concise' || !notSynced);
+      refreshSnippet();
+    });
+    cdnRow.classList.toggle('tly-hidden', exportMode !== 'concise');
+
     var copyBtn = h('button', { class: 'tly-btn tly-primary', text: 'Copy embed code', onclick: function () { ta.select(); try { document.execCommand('copy'); } catch (e) {} copyBtn.textContent = 'Copied ✓'; setTimeout(function () { copyBtn.textContent = 'Copy embed code'; }, 1500); } });
-    var warn = h('div', { class: 'tly-hint tly-warn-text' + (isPlaceholder ? '' : ' tly-hidden'), text: '⚠ Deploy cdn-worker/ (see its README) and paste your real Worker URL above before publishing — this placeholder won’t load.' });
-    ED.panel.appendChild(h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'CDN URL' }), cdnIn]));
-    ED.panel.appendChild(warn);
+
+    ED.panel.appendChild(h('div', { class: 'tly-row' }, [h('span', { class: 'tly-muted', style: { width: '120px' }, text: 'Export mode' }), modeSel]));
+    ED.panel.appendChild(cdnRow);
+    ED.panel.appendChild(cdnWarn);
+    ED.panel.appendChild(syncWarn);
     ED.panel.appendChild(h('div', { class: 'tly-row' }, [copyBtn, h('span', { class: 'tly-hint', text: 'Paste this into the page’s per-page custom code (before </body>).' })]));
     ED.panel.appendChild(ta);
+
+    function refreshSnippet() {
+      if (exportMode === 'concise') { ta.value = snippet(); return; }
+      // Self-contained needs the actual runtime source text inlined.
+      loadEmbedSources(function (src) {
+        ta.value = src ? snippet() : '<!-- Could not load the tour runtime to embed — try reopening the editor. -->';
+      });
+    }
+    refreshSnippet();
   }
 
   function snippet() {
+    if (exportMode === 'concise') {
+      var base = (cdnUrl || DEFAULT_CDN).replace(/\/+$/, '');
+      // Tiny: no config inlined at all — engine.js fetches this tour's config by id at page-load
+      // (see engine.js's fetchAndMount / the public read-only RLS policy it relies on).
+      return '<script data-tourly-id="' + config.id + '" src="' + base + '/engine.js" defer></script>';
+    }
+
+    // Self-contained: Player.js + engine.js + config all inlined in one <script> block — zero
+    // external requests, so the tour works even if the backend/CDN is unreachable.
     var out = clone(config);
     delete out.pageUrl;
-    var base = (cdnUrl || DEFAULT_CDN).replace(/\/+$/, '');
-    return '<script>window.TOURLY_CONFIG = ' + JSON.stringify(out) + ';</script>\n' +
-      '<script src="' + base + '/engine.js" defer></script>';
+    var configLine = 'window.TOURLY_CONFIG = ' + JSON.stringify(out) + ';';
+    return '<script>\n' + configLine + '\n' +
+      (embedSources.playerjs || '') + '\n;\n' +
+      (embedSources.engine || '') +
+      '\n</script>';
   }
 
   // ---- public API ----
@@ -2427,9 +2701,13 @@
 
   // ---- init ----
   function init() {
-    store.get(store.cdnKey, function (r) { if (r) cdnUrl = r; });
+    // Ignore a stored value that's still the old literal placeholder (from before DEFAULT_CDN
+    // was filled in with the real deployed URL) — otherwise a stale save permanently shadows
+    // every future improvement to the default.
+    store.get(store.cdnKey, function (r) { if (r && r.indexOf('YOUR-SUBDOMAIN') === -1) cdnUrl = r; });
+    store.get(store.modeKey, function (r) { if (r === 'concise' || r === 'self-contained') exportMode = r; });
     bg({ type: 'getConfig' }, function (r) {
-      if (r && r.ok) { cloud.configured = r.configured; cloud.userId = r.userId; updateCloudNote(); }
+      if (r && r.ok) { cloud.configured = r.configured; cloud.userId = r.userId; }
     });
     store.get(store.key, function (saved) {
       config = migrateConfig(saved && saved.video ? saved : newConfig());
@@ -2448,10 +2726,6 @@
       }
     });
     window.addEventListener('resize', function () { renderTimeline(); });
-  }
-
-  function updateCloudNote() {
-    if (ED.cloudNote) ED.cloudNote.textContent = cloud.configured ? '☁ synced' : '';
   }
 
   window.__tourlyEditor = API;

@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Tourly — Account</title>
+  <style>
+    body { margin: 0; background: #f6f7fb; color: #1c1e24; font: 14px/1.5 system-ui, -apple-system, sans-serif; }
+    .wrap { max-width: 420px; margin: 12vh auto 0; padding: 0 20px; }
+    .card { background: #fff; border: 1px solid #e3e6f0; border-radius: 12px; padding: 32px; }
+    .lockup { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+    .mark { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #6472ff, #4e5ffd); position: relative; flex: none; }
+    .mark::after { content: ""; position: absolute; top: 50%; left: 51%; transform: translate(-42%, -50%); border-style: solid; border-width: 5px 0 5px 8px; border-color: transparent transparent transparent #fff; }
+    .wordmark { font-weight: 700; font-size: 14px; }
+    .wordmark span { color: #4e5ffd; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p.sub { color: #6b7280; margin: 0 0 22px; }
+    .row { display: flex; gap: 8px; margin-top: 10px; }
+    input { flex: 1; box-sizing: border-box; border: 1px solid #dfe3ea; border-radius: 7px; padding: 10px 12px; font: inherit; background: #fbfbfc; color: #1c1e24; }
+    input#code { text-align: center; letter-spacing: 4px; font: 700 18px ui-monospace, monospace; }
+    button { background: #4e5ffd; border: 0; color: #fff; border-radius: 7px; padding: 10px 16px; font: 600 14px system-ui; cursor: pointer; white-space: nowrap; }
+    button:hover { background: #3f50ee; }
+    button:disabled { opacity: .5; cursor: default; }
+    .hint { color: #8a90a0; font-size: 12px; margin-top: 8px; }
+    .error { color: #c0392b; font-size: 13px; margin-top: 10px; }
+    .success { text-align: center; }
+    .success .mark2 { width: 48px; height: 48px; border-radius: 50%; background: #e4f6ee; color: #0a7d53; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 14px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="lockup">
+        <div class="mark"></div>
+        <div class="wordmark">Tour<span>ly</span></div>
+      </div>
+
+      <div id="emailStep">
+        <h1 id="title">Add an email</h1>
+        <p class="sub" id="subtitle">Back up your tours so they're never tied to just this browser.</p>
+        <div class="row">
+          <input type="email" id="email" placeholder="you@example.com" />
+          <button id="sendCode">Send code</button>
+        </div>
+        <div class="error hidden" id="emailError"></div>
+      </div>
+
+      <div id="codeStep" class="hidden">
+        <h1>Enter the code</h1>
+        <p class="sub">Check <b id="codeEmailLabel"></b> for a code.</p>
+        <div class="row">
+          <input type="text" id="code" inputmode="numeric" maxlength="12" placeholder="Enter code" />
+          <button id="verifyCode">Confirm</button>
+        </div>
+        <div class="hint">Didn't get it? <span id="resend" style="color:#4e5ffd;cursor:pointer;">Resend code</span></div>
+        <div class="error hidden" id="codeError"></div>
+      </div>
+
+      <div id="doneStep" class="hidden success">
+        <div class="mark2">✓</div>
+        <h1 id="doneTitle">You're all set</h1>
+        <p class="sub" id="doneSub">You can close this tab and go back to Tourly.</p>
+      </div>
+    </div>
+  </div>
+  <script src="account.js"></script>
+</body>
+</html>

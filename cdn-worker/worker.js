@@ -1,12 +1,16 @@
 // Tourly CDN proxy — a stable, first-party URL for the tour runtime (engine.js).
 //
 // Every exported tour embed points at THIS worker's URL, never directly at jsDelivr/GitHub.
-// Today the worker fetches + edge-caches engine.js from jsDelivr (which mirrors the public
-// GitHub repo below). Later, swap the upstream fetch for Cloudflare R2/KV to host the source
-// privately — the public URL never changes, so no customer's already-pasted embed code breaks.
+// Serves a BUNDLE: Player.js (required by engine.js's live vidzflow-iframe adapter — without it
+// a video renders but is completely uncontrollable) concatenated with engine.js itself, so a
+// concise export's single <script src="…/engine.js"> tag is fully self-sufficient — nothing else
+// needs to be pasted or loaded separately. Both pieces are fetched from jsDelivr (which mirrors
+// the public GitHub repo below) and edge-cached. Later, swap the upstream fetches for Cloudflare
+// R2/KV to host the source privately — the public URL never changes, so no customer's
+// already-pasted embed code breaks.
 
-var GH_REPO = 'YOUR-GH-USERNAME/tourly';   // <- set to your GitHub username/repo before deploying
-var PINNED_TAG = 'v1';                      // bump + redeploy to roll an engine.js update out to every live tour
+var GH_REPO = 'AdamBorthwick/Tourly';
+var PINNED_TAG = 'v2';                      // bump + redeploy to roll an update out to every live tour
 var EDGE_CACHE_SECONDS = 300;               // how fast an update propagates to already-loaded tours
 
 export default {
@@ -24,24 +28,29 @@ export default {
     var cached = await cache.match(cacheKey);
     if (cached) return cached;
 
-    var upstream = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + PINNED_TAG + '/engine.js';
-    var upstreamRes;
+    var base = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + PINNED_TAG + '/';
+    var playerjsUrl = base + 'tourly-extension/lib/playerjs.min.js';
+    var engineUrl = base + 'engine.js';
+
+    var playerjsRes, engineRes;
     try {
-      upstreamRes = await fetch(upstream, { cf: { cacheTtl: EDGE_CACHE_SECONDS, cacheEverything: true } });
+      [playerjsRes, engineRes] = await Promise.all([
+        fetch(playerjsUrl, { cf: { cacheTtl: EDGE_CACHE_SECONDS, cacheEverything: true } }),
+        fetch(engineUrl, { cf: { cacheTtl: EDGE_CACHE_SECONDS, cacheEverything: true } })
+      ]);
     } catch (e) {
-      return new Response('/* Tourly: upstream fetch failed */', {
-        status: 502,
-        headers: Object.assign({ 'Content-Type': 'application/javascript; charset=utf-8' }, corsHeaders())
-      });
+      return unavailable('upstream fetch failed');
     }
-    if (!upstreamRes.ok) {
-      return new Response('/* Tourly: upstream engine.js unavailable (' + upstreamRes.status + ') */', {
-        status: 502,
-        headers: Object.assign({ 'Content-Type': 'application/javascript; charset=utf-8' }, corsHeaders())
-      });
+    if (!playerjsRes.ok || !engineRes.ok) {
+      return unavailable('upstream unavailable (' + playerjsRes.status + '/' + engineRes.status + ')');
     }
 
-    var body = await upstreamRes.text();
+    var playerjsBody = await playerjsRes.text();
+    var engineBody = await engineRes.text();
+    // Explicit ";" separator between the two independent, self-terminating IIFEs — guards
+    // against ASI hazards if either file's minified tail doesn't end in a semicolon.
+    var body = playerjsBody + '\n;\n' + engineBody;
+
     var res = new Response(body, {
       status: 200,
       headers: Object.assign({
@@ -54,6 +63,13 @@ export default {
     return res;
   }
 };
+
+function unavailable(reason) {
+  return new Response('/* Tourly: ' + reason + ' */', {
+    status: 502,
+    headers: Object.assign({ 'Content-Type': 'application/javascript; charset=utf-8' }, corsHeaders())
+  });
+}
 
 function corsHeaders() {
   return { 'Access-Control-Allow-Origin': '*' };

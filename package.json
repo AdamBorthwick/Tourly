@@ -1,5 +1,11 @@
 {
+  "scripts": {
+    "package": "node store-assets/release.js",
+    "release": "node store-assets/release.js --publish"
+  },
   "devDependencies": {
-    "supabase": "^2.109.1"
+    "sharp": "^0.35.3",
+    "supabase": "^2.109.1",
+    "wrangler": "^4.114.0"
   }
 }

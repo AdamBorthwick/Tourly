@@ -104,6 +104,9 @@ function chunkSegments(segments: Array<{ start: number; end: number; text: strin
   return out;
 }
 
+const PLAN_LIMITS: Record<string, number> = { free: 10, pro: 100 };
+const GLOBAL_DAILY_LIMIT = 200; // circuit breaker independent of any one user's quota
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405);
@@ -113,7 +116,18 @@ Deno.serve(async (req) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceKey) return json({ ok: false, error: "Supabase env missing" }, 503);
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  if (!supabaseUrl || !serviceKey || !anonKey) return json({ ok: false, error: "Supabase env missing" }, 503);
+
+  // Resolve WHO is calling (previously this function never checked at all — anyone with any
+  // valid session, including anonymous, could call it unmetered). Verify the caller's own JWT
+  // via a client scoped to their Authorization header, rather than trusting an unverified
+  // decoded payload — getUser() validates the signature against Supabase's own auth server.
+  const authHeader = req.headers.get("Authorization") || "";
+  const userClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+  const { data: userData, error: userErr } = await userClient.auth.getUser();
+  if (userErr || !userData?.user) return json({ ok: false, error: "Not authenticated" }, 401);
+  const userId = userData.user.id;
 
   let body: { mp4Url?: string; videoId?: string };
   try {
@@ -129,7 +143,7 @@ Deno.serve(async (req) => {
 
   const sb = createClient(supabaseUrl, serviceKey);
 
-  // Cache hit
+  // Cache hit — free, doesn't touch anyone's quota (that's the whole point of the cache).
   const { data: cached, error: cacheErr } = await sb
     .from("transcription_cache")
     .select("segments")
@@ -139,6 +153,39 @@ Deno.serve(async (req) => {
   if (cacheErr) return json({ ok: false, error: cacheErr.message }, 500);
   if (cached?.segments && Array.isArray(cached.segments)) {
     return json({ ok: true, segments: chunkSegments(mapSegments(cached.segments)), cached: true });
+  }
+
+  // Per-user monthly quota, keyed off their profiles row (auto-created for every identity,
+  // anonymous or not, by the auth.users trigger).
+  const { data: profile, error: profileErr } = await sb
+    .from("profiles")
+    .select("plan, transcribe_count, transcribe_reset_at")
+    .eq("id", userId)
+    .maybeSingle();
+  if (profileErr) return json({ ok: false, error: profileErr.message }, 500);
+
+  const now = new Date();
+  let count = profile?.transcribe_count ?? 0;
+  let resetAt = profile?.transcribe_reset_at ? new Date(profile.transcribe_reset_at) : now;
+  if (now > resetAt) {
+    count = 0;
+    resetAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  }
+  const limit = PLAN_LIMITS[profile?.plan ?? "free"] ?? PLAN_LIMITS.free;
+  if (count >= limit) {
+    return json(
+      { ok: false, error: `Monthly transcription limit reached (${limit}). Resets ${resetAt.toISOString().slice(0, 10)}.` },
+      429
+    );
+  }
+
+  // Global daily circuit breaker — independent of any one user's quota, insurance against a
+  // leaked OpenAI key or a bug (there was previously zero protection of any kind here).
+  const today = now.toISOString().slice(0, 10);
+  const { data: globalRow } = await sb.from("usage_global").select("count").eq("day", today).maybeSingle();
+  const globalCount = globalRow?.count ?? 0;
+  if (globalCount >= GLOBAL_DAILY_LIMIT) {
+    return json({ ok: false, error: "Service is at capacity right now — try again later." }, 503);
   }
 
   // Fetch MP4 and send to Whisper
@@ -191,6 +238,19 @@ Deno.serve(async (req) => {
     segments,
   });
   if (insertErr) console.error("cache write failed:", insertErr.message);
+
+  // Only a real (non-cached) Whisper call counts against quota — increment both counters now
+  // that it actually succeeded, so a failed attempt never costs the user anything.
+  const { error: profileUpdateErr } = await sb
+    .from("profiles")
+    .update({ transcribe_count: count + 1, transcribe_reset_at: resetAt.toISOString() })
+    .eq("id", userId);
+  if (profileUpdateErr) console.error("quota update failed:", profileUpdateErr.message);
+
+  const { error: globalUpdateErr } = await sb
+    .from("usage_global")
+    .upsert({ day: today, count: globalCount + 1 }, { onConflict: "day" });
+  if (globalUpdateErr) console.error("global usage update failed:", globalUpdateErr.message);
 
   return json({ ok: true, segments, cached: false });
 });

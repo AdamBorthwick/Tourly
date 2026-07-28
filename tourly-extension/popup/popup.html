@@ -24,6 +24,22 @@
     .muted { color: #8a90a0; font-size: 12px; }
     .sync-ok { color: #0a7d53; }
     .sync-err { color: #c0392b; }
+
+    .acct-badge { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; font-weight: 600; margin-bottom: 8px; }
+    .acct-badge .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .acct-badge.is-signedin { background: #e8f7f0; color: #0a7d53; }
+    .acct-badge.is-signedin .dot { background: #0a7d53; }
+    .acct-badge.is-anon { background: #f3f4f7; color: #4b5262; }
+    .acct-badge.is-anon .dot { background: #9aa0ac; }
+    .acct-badge-email { word-break: break-all; }
+    .acct-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .acct-email { font-weight: 600; word-break: break-all; }
+    .acct-actions { display: flex; gap: 10px; margin-top: 6px; }
+    button.secondary { background: #f3f4f7; border: 1px solid #dfe3ea; color: #1c1e24; border-radius: 6px; padding: 7px 10px; font: 600 12px system-ui; cursor: pointer; white-space: nowrap; }
+    button.secondary:hover { background: #e9ebf1; }
+    button.secondary:disabled { opacity: .5; cursor: default; }
+    .acct-hint { color: #8a90a0; font-size: 11px; margin-top: 5px; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
@@ -39,8 +55,30 @@
     </div>
 
     <div class="sec">
-      <h2>Cloud sync</h2>
-      <div id="syncStatus" class="muted">Checking…</div>
+      <h2>Account</h2>
+
+      <!-- Always-visible, single source of truth for signed-in vs anonymous — never ambiguous. -->
+      <div id="acctBadge" class="acct-badge is-anon">
+        <span class="dot"></span>
+        <span id="acctBadgeText">Checking…</span>
+      </div>
+
+      <!-- anonymous: entry points into Flow A (add email) or Flow B (sign in elsewhere) -->
+      <div id="acctAnon" class="hidden">
+        <div class="acct-actions">
+          <span class="link" id="showAddEmail">Add email to back up your tours</span>
+        </div>
+        <div class="acct-actions">
+          <span class="link" id="showSignIn">Sign in to an existing account</span>
+        </div>
+      </div>
+
+      <!-- signed in: badge above already shows the email; just the sign-out action here -->
+      <div id="acctSignedIn" class="hidden">
+        <button class="secondary" id="signOut">Sign out</button>
+      </div>
+
+      <div id="syncStatus" class="acct-hint">Checking…</div>
     </div>
   </div>
   <script src="popup.js"></script>

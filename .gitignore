@@ -1,6 +1,11 @@
 # Supabase credentials (owner fills locally — never commit)
 tourly-extension/supabase-config.js
 
+# Packaged store zip(s) bundle the real supabase-config.js above — never commit.
+# (Versioned release zips are uploaded to GitHub Releases directly, not tracked in git.)
+store-assets/tourly-extension.zip
+store-assets/tourly-extension-v*.zip
+
 # Dependencies
 node_modules/
 
@@ -12,3 +17,13 @@ Thumbs.db
 
 # Supabase local dev
 supabase/.temp/
+
+# Cloudflare Workers local build/dev state (wrangler dev/deploy cache)
+cdn-worker/.wrangler/
+
+# Deno lockfile — incidental from ad hoc `deno check`/`deno lint` verification runs, not (yet)
+# a deliberate part of the project's build/deploy process. Un-ignore if that changes.
+deno.lock
+
+# Local scope-tracking doc (personal notes, not for the repo)
+BACKLOG.md

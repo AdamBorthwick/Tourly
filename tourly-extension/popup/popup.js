@@ -56,17 +56,64 @@ async function refreshConfig() {
   if (!cfg) {
     el.className = 'sync-err';
     el.textContent = 'Background not responding — click Reload on chrome://extensions, then reopen this popup';
+    renderAccountState(null);
     return cfg;
   }
   if (cfg.configured) {
     el.className = 'sync-ok';
-    el.textContent = 'Synced · account ' + (cfg.userId || '').slice(0, 8);
+    el.textContent = 'Synced';
   } else {
     el.className = 'sync-err';
     el.textContent = cfg.error || 'Cloud sync unavailable — tours saved locally only.';
   }
+  renderAccountState(cfg);
   return cfg;
 }
+
+// ---- account state (anonymous / signed-in) + the add-email / sign-in code flow ----
+// The badge is the single, always-visible source of truth for "am I signed in right now" —
+// everything else (links, forms) is secondary to it, not a substitute for it.
+function setBadge(mode, text) {
+  var badge = $('acctBadge');
+  badge.className = 'acct-badge ' + (mode === 'signedin' ? 'is-signedin' : 'is-anon');
+  $('acctBadgeText').textContent = text;
+}
+
+function renderAccountState(cfg) {
+  if (!cfg || !cfg.configured) {
+    $('acctAnon').classList.add('hidden');
+    $('acctSignedIn').classList.add('hidden');
+    setBadge('anon', 'Not connected');
+    return;
+  }
+  if (cfg.isAnonymous === false && cfg.email) {
+    $('acctSignedIn').classList.remove('hidden');
+    $('acctAnon').classList.add('hidden');
+    setBadge('signedin', '✓ Signed in as ' + cfg.email);
+  } else {
+    $('acctAnon').classList.remove('hidden');
+    $('acctSignedIn').classList.add('hidden');
+    setBadge('anon', 'Anonymous — tours saved to this device only');
+  }
+}
+
+// The email/code flow needs its own tab rather than living in the popup: Chrome closes any
+// extension popup the instant it loses focus, which is exactly what happens the moment someone
+// tabs away to check their email — killing whatever they'd typed so far.
+function openAccountTab(mode) {
+  chrome.tabs.create({ url: chrome.runtime.getURL('account/account.html?mode=' + mode) });
+  window.close();
+}
+$('showAddEmail').addEventListener('click', function () { openAccountTab('email_change'); });
+$('showSignIn').addEventListener('click', function () { openAccountTab('email'); });
+
+$('signOut').addEventListener('click', async function () {
+  var btn = $('signOut');
+  btn.disabled = true; btn.textContent = 'Signing out…';
+  await bg({ type: 'authSignOut' });
+  btn.disabled = false; btn.textContent = 'Sign out';
+  await loadTours();
+});
 
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
 
