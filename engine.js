@@ -117,7 +117,11 @@
   }
 
   function hiRingUsesGlowPath(anim) {
-    return anim === 'sweep';
+    return anim === 'sweep' || anim === 'box-glow';
+  }
+
+  function hiRingGlowScale(anim) {
+    return (anim === 'sweep' || anim === 'box-glow') ? HI_SWEEP_GLOW_SCALE : 1;
   }
 
   function hiRingUsesGlowHalo(anim) {
@@ -833,7 +837,9 @@
       '.tourly-hi-anim-pulse .tourly-hi-ring-path{animation:tourlyHiRingPulseGlow 1.35s ease-in-out infinite}',
       '@keyframes tourlyHiRingPulseGlow{0%{opacity:0}20%{opacity:1}40%{opacity:0}60%{opacity:1}80%{opacity:0}100%{opacity:0}}',
       '.tourly-hi-anim-box-glow .tourly-hi-ring-shell{overflow:visible}',
+      '.tourly-hi-anim-box-glow .tourly-hi-ring-glow-wrap{filter:drop-shadow(0 0 10px var(--tly-hi-color,#ff4d8d)) drop-shadow(0 0 22px var(--tly-hi-color,#ff4d8d))}',
       '.tourly-hi-anim-box-glow .tourly-hi-glow-halo{display:block;animation-name:tourlyHiRingBoxGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
+      '.tourly-hi-anim-box-glow .tourly-hi-ring-glow{display:block;opacity:1;stroke-width:3;animation-name:tourlyHiRingBoxGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '.tourly-hi-anim-box-glow .tourly-hi-ring-path{animation-name:tourlyHiRingBoxGlow;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
       '@keyframes tourlyHiRingBoxGlow{0%{opacity:0}25%{opacity:1}75%{opacity:1}100%{opacity:0}}',
       '.tourly-hi-anim-sweep .tourly-hi-ring-shell{overflow:visible}',
@@ -919,13 +925,16 @@
     el.style.animationFillMode = 'both';
     if (anim === 'box-glow') {
       var ringPath = ov.querySelector('.tourly-hi-ring-path');
-      if (ringPath) {
-        ringPath.style.setProperty('--tly-hi-duration', dur);
-        ringPath.style.animationDuration = dur;
-        ringPath.style.animationDelay = delay;
-        ringPath.style.animationIterationCount = '1';
-        ringPath.style.animationFillMode = 'both';
-      }
+      var glowPath = ov.querySelector('.tourly-hi-ring-glow');
+      var halo = ov.querySelector('.tourly-hi-glow-halo');
+      [ringPath, glowPath, halo].forEach(function (node) {
+        if (!node) return;
+        node.style.setProperty('--tly-hi-duration', dur);
+        node.style.animationDuration = dur;
+        node.style.animationDelay = delay;
+        node.style.animationIterationCount = '1';
+        node.style.animationFillMode = 'both';
+      });
     }
     if (anim === 'sweep') {
       var glowPath = ov.querySelector('.tourly-hi-ring-glow');
@@ -1076,18 +1085,25 @@
     }
     if (glowPath && glowWrap) {
       if (hiRingUsesGlowPath(anim)) {
-        if (!ov._hiClipId) ov._hiClipId = 'tlyclip-' + Math.random().toString(36).slice(2, 9);
-        this._ensureHiOuterClip(svg, ov._hiClipId, innerW, innerH, inset, iw, ih, m.radii, m.stroke);
-        glowWrap.setAttribute('clip-path', 'url(#' + ov._hiClipId + ')');
         var cx = innerW / 2;
         var cy = innerH / 2;
-        var tf = 'translate(' + cx + ' ' + cy + ') scale(' + HI_SWEEP_GLOW_SCALE + ') translate(' + (-cx) + ' ' + (-cy) + ')';
+        var scale = hiRingGlowScale(anim);
+        var tf = 'translate(' + cx + ' ' + cy + ') scale(' + scale + ') translate(' + (-cx) + ' ' + (-cy) + ')';
         if (glowWrap.getAttribute('transform') !== tf) glowWrap.setAttribute('transform', tf);
         if (glowPath.getAttribute('d') !== d) glowPath.setAttribute('d', d);
         glowPath.style.setProperty('--tly-hi-perimeter', String(len));
         glowPath.style.setProperty('--tly-hi-perimeter-neg', String(-len));
         if (glowPath.getAttribute('stroke-dasharray') !== String(len)) {
           glowPath.setAttribute('stroke-dasharray', String(len));
+        }
+        if (anim === 'sweep') {
+          if (!ov._hiClipId) ov._hiClipId = 'tlyclip-' + Math.random().toString(36).slice(2, 9);
+          this._ensureHiOuterClip(svg, ov._hiClipId, innerW, innerH, inset, iw, ih, m.radii, m.stroke);
+          glowWrap.setAttribute('clip-path', 'url(#' + ov._hiClipId + ')');
+        } else {
+          glowWrap.removeAttribute('clip-path');
+          glowPath.setAttribute('stroke-dashoffset', '0');
+          path.setAttribute('stroke-dashoffset', '0');
         }
         glowWrap.style.display = '';
         glowPath.style.display = '';
@@ -1570,7 +1586,15 @@
   var Tourly = {
     version: VERSION,
     mount: function (config, options) { return new TourController(config, options); },
-    _instances: []
+    _instances: [],
+    // Shared with the editor pick overlay so highlight radius matches live highlight geometry
+    // (transparent surfaces get the same default radius as engine outlines).
+    overlayCornerRadiiCss: function (el) {
+      if (!el || el.nodeType !== 1) return '0px';
+      var rect = el.getBoundingClientRect();
+      var cs = window.getComputedStyle(el);
+      return readCornerRadii(cs, rect, isTransparentSurface(cs)).css;
+    }
   };
   var _origMount = Tourly.mount;
   Tourly.mount = function (config, options) { var t = _origMount(config, options); Tourly._instances.push(t); return t; };
@@ -1592,13 +1616,14 @@
   // (e.g. spell it out in prose, or split it across a concatenation), or a browser's HTML parser
   // will terminate the surrounding tag early and corrupt the page.
   function fetchAndMount(tourId) {
-    var url = TOURLY_BACKEND.url + '/rest/v1/tours?id=eq.' + encodeURIComponent(tourId) + '&select=config';
-    fetch(url, { headers: { apikey: TOURLY_BACKEND.anonKey } })
+    var url = TOURLY_BACKEND.url + '/rest/v1/rpc/get_tour_config';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: TOURLY_BACKEND.anonKey },
+      body: JSON.stringify({ tour_id: tourId })
+    })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (rows) {
-        var config = rows && rows[0] && rows[0].config;
-        if (config) doMount(config);
-      })
+      .then(function (config) { if (config) doMount(config); })
       .catch(function () { /* offline/unreachable — silently skip, page still works */ });
   }
 

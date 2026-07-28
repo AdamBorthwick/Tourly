@@ -61,13 +61,26 @@ function main() {
   fs.copyFileSync(stableZip, versionedZip);
   console.log(`✓ built ${path.relative(ROOT, stableZip)} and ${path.relative(ROOT, versionedZip)} (${files.length} files)`);
 
-  // 3. Commit just the version bump, tag it
-  sh(`git add "${MANIFEST}"`);
+  // 3. Update CDN worker's PINNED_TAG so live tours pick up the new engine.js
+  const workerFile = path.join(ROOT, 'cdn-worker', 'worker.js');
+  const workerText = fs.readFileSync(workerFile, 'utf8');
+  const updatedWorker = workerText.replace(
+    /PINNED_TAG\s*=\s*'[^']+'/,
+    `PINNED_TAG = '${tag}'`
+  );
+  if (updatedWorker === workerText) {
+    throw new Error('Could not find PINNED_TAG in cdn-worker/worker.js');
+  }
+  fs.writeFileSync(workerFile, updatedWorker);
+  console.log(`✓ updated CDN worker PINNED_TAG to ${tag}`);
+
+  // 4. Commit version bump + CDN worker tag, then tag it
+  sh(`git add "${MANIFEST}" "${workerFile}"`);
   sh(`git commit -m "Release ${tag}"`);
   sh(`git tag ${tag}`);
   console.log(`✓ committed and tagged ${tag}`);
 
-  // 4. Warn about anything else left uncommitted, so it's never silently excluded from a release
+  // 5. Warn about anything else left uncommitted, so it's never silently excluded from a release
   const dirty = sh('git status --porcelain');
   if (dirty) {
     console.log('\n⚠ Other uncommitted changes exist (NOT included in this release commit):');
@@ -75,14 +88,16 @@ function main() {
   }
 
   if (!publish) {
-    console.log(`\nLocal steps done. To publish:`);
+    console.log(`\nLocal steps done. To publish and deploy:`);
     console.log(`  git push && git push --tags`);
+    console.log(`  (from cdn-worker/) wrangler deploy       # deploy new PINNED_TAG to CDN`);
     console.log(`  gh release create ${tag} "${path.relative(ROOT, versionedZip)}" --title "${tag}" --notes "Tourly ${tag}"`);
-    console.log(`\n(or re-run with --publish to do both automatically)`);
+    console.log(`\n(or re-run with --publish to do git push/tags and gh release automatically)`);
+    console.log(`  (wrangler deploy still requires manual run — install wrangler and auth once)`);
     return;
   }
 
-  // 5. --publish: push, then create the GitHub Release with the zip attached
+  // 6. --publish: push, then create the GitHub Release with the zip attached
   const authed = shOk('gh auth status');
   if (!authed) {
     console.log('\n⚠ gh is not authenticated. Run `gh auth login` once, then re-run with --publish.');
@@ -95,7 +110,8 @@ function main() {
   sh('git push --tags');
   sh(`gh release create ${tag} "${versionedZip}" --title "${tag}" --notes "Tourly ${tag}"`);
   console.log(`\n✓ Published ${tag} to GitHub Releases.`);
-  console.log(`  Chrome Web Store still needs a separate manual upload of ${path.relative(ROOT, stableZip)} in the Developer Dashboard.`);
+  console.log(`  ⚠ CDN deployment: cd cdn-worker && wrangler deploy   # required to roll out engine.js update`);
+  console.log(`  ⚠ Chrome Web Store upload: manual step in Developer Dashboard (${path.relative(ROOT, stableZip)})`);
 }
 
 main();
