@@ -859,6 +859,7 @@
   function hideEditorUI(hidePreview) {
     if (pickContext) stopPick();
     if (previewActive && hidePreview) stopTourPreview(true);
+    clearOffScreenArrow();
     ED.root.classList.add('tly-hidden');
     if (ED.backdrop) ED.backdrop.classList.add('tly-hidden');
     refreshPreview();
@@ -2058,6 +2059,55 @@
     syncBarLabel(el, barW);
   }
 
+  // ---- directional arrow for off-screen elements ----
+  var ED_arrow = null;
+
+  function clearOffScreenArrow() {
+    if (ED_arrow) { ED_arrow.remove(); ED_arrow = null; }
+  }
+
+  function isElementInViewport(el) {
+    var rect = el.getBoundingClientRect();
+    return rect.top >= 0 && rect.bottom <= window.innerHeight;
+  }
+
+  function showOffScreenArrow(el, laneColor) {
+    clearOffScreenArrow();
+    var rect = el.getBoundingClientRect();
+    var isAbove = rect.top < 0;
+    var isBelow = rect.bottom > window.innerHeight;
+
+    if (!isAbove && !isBelow) return; // element is in viewport, no arrow needed
+
+    ED_arrow = document.createElement('div');
+    ED_arrow.className = 'tly-offscreen-arrow';
+    ED_arrow.style.position = 'fixed';
+    ED_arrow.style.width = '40px';
+    ED_arrow.style.height = '40px';
+    ED_arrow.style.borderRadius = '6px';
+    ED_arrow.style.backgroundColor = laneColor;
+    ED_arrow.style.display = 'flex';
+    ED_arrow.style.alignItems = 'center';
+    ED_arrow.style.justifyContent = 'center';
+    ED_arrow.style.zIndex = '10000';
+    ED_arrow.style.left = '12px';
+    ED_arrow.style.fontSize = '20px';
+    ED_arrow.style.color = '#ffffff';
+    ED_arrow.style.fontWeight = 'bold';
+    ED_arrow.style.userSelect = 'none';
+    ED_arrow.style.pointerEvents = 'none';
+
+    if (isAbove) {
+      ED_arrow.style.top = '12px';
+      ED_arrow.textContent = '↑';
+    } else {
+      ED_arrow.style.bottom = '12px';
+      ED_arrow.textContent = '↓';
+    }
+
+    document.body.appendChild(ED_arrow);
+  }
+
   // ---- selection + delete-key ----
   function selectCue(id) {
     selectedCueId = id;
@@ -2075,6 +2125,10 @@
     });
     renderBottomEditor();
     applyMotionLaneLayout();
+
+    // For subtitles: only highlight if visible, do nothing if off-screen
+    clearOffScreenArrow();
+    // (subtitles only show on-screen highlight if visible, no arrow indicator)
   }
   function selectPoint(id) {
     selectedPointId = id;
@@ -2092,6 +2146,19 @@
     });
     renderBottomEditor();
     applyMotionLaneLayout();
+
+    // Show off-screen arrow if scroll target is not visible
+    var point = config.scrollPoints.find(function (p) { return p.id === id; });
+    if (point && point.target && point.target.selector) {
+      var targetEl = document.querySelector(point.target.selector);
+      if (targetEl) {
+        if (isElementInViewport(targetEl)) {
+          clearOffScreenArrow();
+        } else {
+          showOffScreenArrow(targetEl, '#2563eb'); // blue for scroll lane
+        }
+      }
+    }
   }
   function nearestPointId(t) {
     var best = null, bd = Infinity;
@@ -2342,6 +2409,19 @@
     });
     renderBottomEditor();
     applyMotionLaneLayout();
+
+    // Show off-screen arrow if highlight target is not visible
+    var hl = config.highlights.find(function (h) { return h.id === id; });
+    if (hl && hl.target && hl.target.selector) {
+      var targetEl = document.querySelector(hl.target.selector);
+      if (targetEl) {
+        if (isElementInViewport(targetEl)) {
+          clearOffScreenArrow();
+        } else {
+          showOffScreenArrow(targetEl, '#ff4d8d'); // pink for highlight lane
+        }
+      }
+    }
   }
 
   function renderHighlightEditor() {
@@ -2793,6 +2873,7 @@
       document.removeEventListener('keydown', onKeyDown, true);
       stopPick();
       stopTourPreview(false);
+      clearOffScreenArrow();
       if (ED._offsetRO) { ED._offsetRO.disconnect(); ED._offsetRO = null; }
       if (engine) engine.destroy();
       if (ED.root) ED.root.remove();
