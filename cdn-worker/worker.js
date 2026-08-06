@@ -24,7 +24,9 @@ export default {
     }
 
     var cache = caches.default;
-    var cacheKey = new Request(url.toString(), request);
+    // Include the pin in the cache key so bumping PINNED_TAG + redeploying never serves a
+    // stale bundle for up to EDGE_CACHE_SECONDS.
+    var cacheKey = new Request(url.origin + url.pathname + '?pin=' + PINNED_TAG, request);
     var cached = await cache.match(cacheKey);
     if (cached) return cached;
 
