@@ -6,9 +6,11 @@
  * Public API:
  *   const tour = window.Tourly.mount(config, { mode });
  *   tour.play() / pause() / toggle() / seek(sec) / getTime() / getDuration()
+ *   tour.close() / reopen()        // close parks the dock off-screen; hovering where it left restores it
  *   tour.setConfig(cfg)            // live re-render (editor)
  *   tour.setPreviewVisible(bool)   // show/hide video + subtitles (editor overlay)
  *   tour.resolveTargetY(target)    // px scroll position for a target def
+ *   tour.resolveScrollYAtTime(sec)   // interpolated scroll Y at video time (incl. mid-transition)
  *   tour.captureManualTarget()     // {mode:"manual", manualPercent} at current scroll
  *   tour.on(evt, cb) / off(evt, cb)   // 'ready'|'timeupdate'|'play'|'pause'|'ended'|'statechange'
  *   tour.destroy()
@@ -23,7 +25,24 @@
   var SEEK_THRESHOLD = 0.4;   // seconds jumped in one frame → treat as seek (snap, not tween)
   var DEFAULT_EASE = 0.8;     // seconds for a scroll tween when a keyframe is crossed
   var TOAST_MS = 2600;        // how long the "scroll is guided" toast stays up
+  var TOAST_SHADOW = '0 8px 30px rgba(0,0,0,.35)';
   var SCROLL_KEYS = { ' ': 1, 'Spacebar': 1, 'ArrowUp': 1, 'ArrowDown': 1, 'PageUp': 1, 'PageDown': 1, 'Home': 1, 'End': 1 };
+  var BREAK_CHARGE_MAX = 350;   // cumulative wheel/touch weight to break guided scroll
+  var BREAK_MAX_INSET = 12;     // px the guided frame grows inward at full charge
+  var BREAK_IDLE_MS = 650;      // ms after last scroll input before the frame retracts
+  // Editor-only radius preview: which elements can be ringed, and what the ring looks like.
+  var RADIUS_PREVIEW_TARGETS = ['player', 'subtitles', 'notification', 'frame'];
+  var RADIUS_PREVIEW_RING = '2px solid #2563eb';
+  var SUB_PREVIEW_TEXT = 'Subtitle preview';
+  var BREAK_RETRACT_MS = 220;   // ms for the inset to animate back to the edge
+  var RESUME_ALIGN_HOLD_MS = 450; // pause at flow position after user scrolled away while paused
+  var DEFAULT_FRAME_COLOR = '#eab308';
+  var GUIDED_FRAME_BORDER = '2px';       // normal border width
+  var GUIDED_FRAME_BORDER_PREVIEW = '4px'; // thicker while the color picker holds it on screen
+  var DOCK_PEEK_PX = 16;        // px of the dock left on screen when parked, as the reopen affordance
+  var SUB_EXIT_PX = 120;        // px a live cue travels when playback stops
+  var SUB_IDLE_PX = 8;          // px nudge for a cue that has nothing to show
+  var REOPEN_PAD_PX = 28;       // how far outside the dock's old box the reopen hotspot reaches
 
   // Shared backend for "concise" exports (a script tag carrying a data-tourly-id attribute, no
   // inline config) — the same project tourly-extension/supabase-config.js points at. Read-only
@@ -37,9 +56,10 @@
   // ---- defaults ------------------------------------------------------------
   var DEFAULTS = {
     theme: {
-      video: { radius: 8, width: 320, position: 'bottom-right', margin: 24 },
-      subtitles: { font: 'inherit', size: 16, color: '#ffffff', bg: 'rgba(0,0,0,0.62)', radius: 8, maxWidth: 80, weight: 500 },
-      notification: { text: 'Scrolling is guided during the tour — pause to explore', bg: '#111318', textColor: '#ffffff', radius: 8 }
+      video: { radius: 8, width: 320, position: 'bottom-right', margin: 24, shadow: 'medium', zIndex: 999 },
+      subtitles: { font: 'inherit', size: 12, color: '#ffffff', bg: 'rgba(0,0,0,0.62)', radius: 8, weight: 500, position: 'bottom-center', shadow: 'none' },
+      notification: { text: 'Scrolling is paused during the tour', bg: '#eab308', textColor: '#000000', radius: 8 },
+      guidedFrame: { color: DEFAULT_FRAME_COLOR }
     },
     behavior: {
       scrollLock: true,
@@ -57,6 +77,34 @@
   function linear(p) { return p; }
   var EASINGS = { 'ease': easeInOutCubic, 'linear': linear, 'ease-in': easeInCubic, 'ease-out': easeOutCubic };
   function easingFn(name) { return EASINGS[name] || easeInOutCubic; }
+  function getContrastTextColor(bgHex) {
+    // Perceived brightness (YIQ) of the background decides black vs white text.
+    var hex = String(bgHex || '').replace('#', '');
+    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    var r = parseInt(hex.substr(0, 2), 16) / 255;
+    var g = parseInt(hex.substr(2, 2), 16) / 255;
+    var b = parseInt(hex.substr(4, 2), 16) / 255;
+    var luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+    return luminance > 0.5 ? '#000000' : '#ffffff';
+  }
+  // Alpha is baked into the ramp: a shadow needs a translucent colour to read correctly over
+  // arbitrary page content, and the panel has no way to author one.
+  var SHADOW_CSS = {
+    none: 'none',
+    light: '0 4px 14px rgba(0,0,0,.22)',
+    medium: '0 10px 40px rgba(0,0,0,.35)',
+    strong: '0 18px 60px rgba(0,0,0,.55)'
+  };
+  function getShadowCSS(shadowLevel, fallbackLevel) {
+    var css = SHADOW_CSS[shadowLevel];
+    return css != null ? css : SHADOW_CSS[fallbackLevel];
+  }
+  // Page-level stacking for .tourly-root. Concise embeds can override via data-tourly-z-index.
+  function themeRootZ(videoTheme) {
+    var z = videoTheme && videoTheme.zIndex != null ? +videoTheme.zIndex : 999;
+    if (!isFinite(z)) z = 999;
+    return Math.max(0, Math.min(2147483646, Math.round(z)));
+  }
   function docHeight() {
     return Math.max(
       document.body ? document.body.scrollHeight : 0,
@@ -82,6 +130,37 @@
     if (cls) e.className = cls;
     if (css) Object.assign(e.style, css);
     return e;
+  }
+
+  // A z-index is only meaningful inside the stacking context that owns it, so a target sitting at
+  // z-index:5 inside a transformed wrapper is NOT "5" at page level. Walk to the outermost ancestor
+  // context and use that value — that's the depth the target actually paints at, and therefore the
+  // depth its highlight ring has to match.
+  function createsStackingContext(cs) {
+    if (cs.position !== 'static' && cs.zIndex !== 'auto') return true;
+    if (cs.position === 'fixed' || cs.position === 'sticky') return true;
+    if (parseFloat(cs.opacity) < 1) return true;
+    if (cs.transform && cs.transform !== 'none') return true;
+    if (cs.filter && cs.filter !== 'none') return true;
+    if (cs.perspective && cs.perspective !== 'none') return true;
+    if (cs.isolation === 'isolate') return true;
+    if (cs.mixBlendMode && cs.mixBlendMode !== 'normal') return true;
+    if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+    if (cs.willChange && /transform|opacity|filter|perspective/.test(cs.willChange)) return true;
+    return false;
+  }
+  function rootStackingZ(node) {
+    var z = 0;
+    var e = node;
+    while (e && e !== document.body && e !== document.documentElement) {
+      var cs = window.getComputedStyle(e);
+      if (createsStackingContext(cs)) {
+        var v = parseInt(cs.zIndex, 10);
+        if (!isNaN(v)) z = v;   // keep walking: the outermost context is the one that wins
+      }
+      e = e.parentElement;
+    }
+    return z;
   }
 
   var HI_STROKE = 2;
@@ -266,6 +345,7 @@
     this._activeIdx = -2;       // -2 = uninitialised, -1 = before first point
     this._prevT = 0;
     this._tweenRAF = 0;
+    this._activeTween = null;        // in-flight scroll tween (saved mid-transition on pause)
     this._programmatic = false;
 
     this._listeners = {};
@@ -275,14 +355,21 @@
     this._subtitlesEnabled = true;   // CC toggle on the video
     this._subVisible = false;
     this._subLift = 0;               // px the subtitle is raised while the toast is showing
-    this._attempts = [];             // recent scroll-attempt weights → sustained attempts auto-pause
     this._scrolledWhilePaused = false; // user moved the page while paused → resume uses scroll tween
+    this._breakCharge = 0;           // progress toward breaking guided scroll (0–BREAK_CHARGE_MAX)
+    this._breakExiting = false;      // playing the frame retract animation
+    this._breakIdleTimer = 0;
     this._pendingPlay = false;       // play() before player ready
     this._videoWarmed = false;
     this._hiTargetNodes = {};        // highlight id → DOM node with text-glow class
+    this._hiPreviewId = null;        // editor: highlight pinned on screen while selected
     this._volume = 100;              // 0–100
     this._lastVolume = 100;          // restore level after unmuting
     this._muted = false;
+    this._timelineScrubbing = false;
+    this._editorUiRaised = this.mode === 'edit'; // editor chrome sits above preview highlights
+    this._onTimelineEnd = null;
+    this._alignHoldTimer = 0;
 
     this._resortPoints();
     this._buildDOM();
@@ -309,7 +396,9 @@
     var self = this;
     var root = el('div', 'tourly-root');
     root.setAttribute('data-tourly', VERSION);
-    Object.assign(root.style, { position: 'fixed', zIndex: 2147483000, inset: '0', pointerEvents: 'none' });
+    Object.assign(root.style, {
+      position: 'fixed', zIndex: themeRootZ(this.config.theme.video), inset: '0', pointerEvents: 'none'
+    });
 
     // video dock
     var dock = el('div', 'tourly-dock');
@@ -350,12 +439,12 @@
       this._catcher = catcher;
     }
 
-    // subtitle (CC) toggle button on the video
+    // subtitle (CC) toggle — top-left
     var cc = el('button', 'tourly-cc');
     cc.type = 'button';
     cc.textContent = 'CC';
     Object.assign(cc.style, {
-      position: 'absolute', bottom: '8px', left: '8px', zIndex: 5,
+      position: 'absolute', top: '8px', left: '8px', zIndex: 6,
       font: '700 11px system-ui, sans-serif', letterSpacing: '.5px', lineHeight: '1',
       padding: '4px 7px', borderRadius: '5px', cursor: 'pointer', border: '0',
       background: 'rgba(0,0,0,.55)', color: '#fff', pointerEvents: 'auto'
@@ -380,11 +469,48 @@
     this._closeBtn = closeBtn;
     if (this.mode === 'edit') closeBtn.style.display = 'none';   // no close button while editing
 
-    // volume control (bottom-right): mute toggle + slider
+    // bottom bar: timeline scrubber + volume
+    var bar = el('div', 'tourly-bar');
+    Object.assign(bar.style, {
+      position: 'absolute', left: '0', right: '0', bottom: '0', zIndex: 6,
+      display: 'flex', alignItems: 'center', gap: '8px',
+      padding: '6px 8px 8px', boxSizing: 'border-box',
+      background: 'linear-gradient(to top, rgba(0,0,0,.62) 0%, rgba(0,0,0,.35) 70%, transparent 100%)',
+      pointerEvents: 'none'
+    });
+    bar.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    var timelineWrap = el('div', 'tourly-timeline-wrap');
+    Object.assign(timelineWrap.style, {
+      flex: '1 1 auto', minWidth: '0', display: 'flex', alignItems: 'center',
+      background: 'rgba(0,0,0,.5)', borderRadius: '14px', padding: '4px 8px', pointerEvents: 'auto'
+    });
+    timelineWrap.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    var timeline = el('input', 'tourly-timeline');
+    timeline.type = 'range';
+    timeline.min = '0';
+    timeline.max = '1000';
+    timeline.value = '0';
+    timeline.setAttribute('aria-label', 'Video timeline');
+    Object.assign(timeline.style, {
+      width: '100%', minWidth: '0', margin: '0', cursor: 'pointer',
+      accentColor: '#fff', pointerEvents: 'auto', height: '16px', background: 'transparent'
+    });
+    timeline.addEventListener('mousedown', function (e) { e.stopPropagation(); self._beginTimelineScrub(); });
+    timeline.addEventListener('touchstart', function (e) { e.stopPropagation(); self._beginTimelineScrub(); }, { passive: true });
+    timeline.addEventListener('input', function (e) {
+      e.stopPropagation();
+      self._scrubTimelineTo(+timeline.value / 1000);
+    });
+    timelineWrap.appendChild(timeline);
+    this._timeline = timeline;
+    this._timelineWrap = timelineWrap;
+
+    // volume control: mute toggle + slider (right of timeline)
     var vol = el('div', 'tourly-vol');
     Object.assign(vol.style, {
-      position: 'absolute', bottom: '8px', right: '8px', zIndex: 5,
-      display: 'flex', alignItems: 'center', gap: '6px',
+      flex: 'none', display: 'flex', alignItems: 'center', gap: '6px',
       background: 'rgba(0,0,0,.5)', borderRadius: '14px', padding: '4px 8px', pointerEvents: 'auto'
     });
     vol.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -400,7 +526,10 @@
     range.addEventListener('mousedown', function (e) { e.stopPropagation(); });
     vol.appendChild(volBtn);
     vol.appendChild(range);
-    dock.appendChild(vol);
+    bar.appendChild(timelineWrap);
+    bar.appendChild(vol);
+    dock.appendChild(bar);
+    this._controlBar = bar;
     this._volEl = vol; this._volBtn = volBtn; this._volRange = range;
 
     // start / resume big button (idle + user-paused)
@@ -434,19 +563,21 @@
       position: 'fixed', left: '50%', bottom: '24px', transform: 'translateX(-50%) translateY(24px)',
       display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px',
       pointerEvents: 'auto', opacity: '0', transition: 'opacity .2s ease, transform .2s ease',
-      font: '500 13px system-ui, sans-serif', whiteSpace: 'nowrap'
+      font: '500 12px system-ui, sans-serif', whiteSpace: 'nowrap'
     });
     var toastText = el('span', 'tourly-toast-text');
-    var toastBtn = el('button', 'tourly-toast-btn');
-    toastBtn.type = 'button';
-    toastBtn.textContent = 'Pause';
-    Object.assign(toastBtn.style, { cursor: 'pointer', border: '0', borderRadius: '6px', padding: '5px 10px', font: '600 13px system-ui, sans-serif' });
-    toastBtn.addEventListener('click', function () { self && self.pause(); self && self._hideToast(); });
     toast.appendChild(toastText);
-    toast.appendChild(toastBtn);
     this._toast = toast;
     this._toastText = toastText;
-    this._toastBtn = toastBtn;
+
+    // viewport frame — persistent in preview, appears on scroll attempts in live tours
+    var guidedFrame = el('div', 'tourly-guided-frame');
+    Object.assign(guidedFrame.style, {
+      position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: Math.max(0, themeRootZ(this.config.theme.video) - 1),
+      boxSizing: 'border-box', borderWidth: GUIDED_FRAME_BORDER, borderStyle: 'solid', borderColor: 'transparent', opacity: '0'
+    });
+    root.appendChild(guidedFrame);
+    this._guidedFrame = guidedFrame;
 
     root.appendChild(dock);
     root.appendChild(sub);
@@ -466,6 +597,64 @@
   function volIconLow() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + speakerBase() + '<path d="M16 7.5a5 5 0 010 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'; }
   function volIconMute() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + speakerBase() + '<path d="M16 9l5 6M21 9l-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'; }
 
+  // Visible viewport midline — shifts up when the editor dock raises bottom chrome (offsetBottom).
+  function visibleMidY(offsetBottom) {
+    return 'calc((100vh - ' + (offsetBottom || 0) + 'px) / 2)';
+  }
+
+  var POSITION_FALLBACK = {
+    'bottom-right': 'bottom-center', 'bottom-left': 'bottom-center', 'bottom-center': 'bottom-right',
+    'top-right': 'top-center', 'top-left': 'top-center', 'top-center': 'top-right',
+    left: 'bottom-left', right: 'bottom-right', center: 'bottom-center'
+  };
+
+  function alternatePosition(occupied) {
+    return POSITION_FALLBACK[occupied] || 'top-center';
+  }
+
+  // Which way an element leaves when hidden: toward the edge it is anchored to. Corners exit
+  // horizontally (matching the original bottom-right slide); centred top/bottom exit vertically;
+  // dead-centre has no edge to leave by, so it only fades.
+  function exitVector(pos) {
+    if (pos === 'center') return { x: 0, y: 0 };
+    if (pos === 'top-center') return { x: 0, y: -1 };
+    if (pos === 'bottom-center') return { x: 0, y: 1 };
+    if (pos.indexOf('left') > -1) return { x: -1, y: 0 };
+    if (pos.indexOf('right') > -1) return { x: 1, y: 0 };
+    return { x: 0, y: 1 };
+  }
+
+  // Combine the centring transform a position implies with an extra offset, so callers can slide an
+  // element without clobbering the translate that keeps it centred. dx/dy are CSS lengths.
+  function offsetTransform(pos, dx, dy) {
+    if (pos === 'center') return 'translate(calc(-50% + ' + dx + '), calc(-50% + ' + dy + '))';
+    if (pos === 'left' || pos === 'right') return 'translate(' + dx + ', calc(-50% + ' + dy + '))';
+    if (pos === 'bottom-center' || pos === 'top-center') return 'translate(calc(-50% + ' + dx + '), ' + dy + ')';
+    return 'translate(' + dx + ', ' + dy + ')';
+  }
+
+  function applyElementAlignment(el, pos, marginPx, offsetBottomPx, offsetRightPx) {
+    var mm = marginPx != null && isFinite(+marginPx) ? Math.max(0, +marginPx) : 24;
+    var ob = offsetBottomPx || 0;
+    var or = offsetRightPx || 0;
+    var margin = mm + 'px';
+    var bottomM = (ob + mm) + 'px';
+    var rightM = (mm + or) + 'px';
+    var mid = visibleMidY(ob);
+    var midX = or ? ('calc((100vw - ' + or + 'px) / 2)') : '50%';
+    el.style.top = el.style.right = el.style.bottom = el.style.left = 'auto';
+    el.style.transform = 'none';
+    if (pos === 'bottom-right') { el.style.bottom = bottomM; el.style.right = rightM; }
+    else if (pos === 'bottom-left') { el.style.bottom = bottomM; el.style.left = margin; }
+    else if (pos === 'top-right') { el.style.top = margin; el.style.right = rightM; }
+    else if (pos === 'top-left') { el.style.top = margin; el.style.left = margin; }
+    else if (pos === 'bottom-center') { el.style.bottom = bottomM; el.style.left = midX; el.style.transform = 'translateX(-50%)'; }
+    else if (pos === 'top-center') { el.style.top = margin; el.style.left = midX; el.style.transform = 'translateX(-50%)'; }
+    else if (pos === 'left') { el.style.left = margin; el.style.top = mid; el.style.transform = 'translateY(-50%)'; }
+    else if (pos === 'center') { el.style.top = mid; el.style.left = midX; el.style.transform = 'translate(-50%, -50%)'; }
+    else if (pos === 'right') { el.style.right = rightM; el.style.top = mid; el.style.transform = 'translateY(-50%)'; }
+  }
+
   // ---- theme --------------------------------------------------------------
   TourController.prototype._applyTheme = function () {
     var t = this.config.theme;
@@ -474,47 +663,119 @@
 
     // dock geometry. `offsetBottom` raises bottom-anchored elements without touching the horizontal
     // margin (the editor uses it to lift the preview above the timeline bar).
-    var mm = (v.margin || 24);
+    var mm = v.margin != null && isFinite(+v.margin) ? Math.max(0, +v.margin) : 24;
     var ob = (v.offsetBottom || 0);
+    var or = (v.offsetRight || 0);
     var margin = mm + 'px';
-    var bottomM = (mm + ob) + 'px';
+    var bottomM = (ob + mm) + 'px';
     var width = isMobile ? (m.videoWidth || '45vw') : (typeof v.width === 'number' ? v.width + 'px' : v.width);
     var pos = isMobile ? (m.position || 'bottom-center') : (v.position || 'bottom-right');
     var radius = v.radius != null ? v.radius : 8;
     var radiusPx = radius + 'px';
+    var rootZ = themeRootZ(v);
+    if (this._root) this._root.style.zIndex = String(rootZ);
+    if (this._guidedFrame) this._guidedFrame.style.zIndex = String(Math.max(0, rootZ - 1));
     Object.assign(this._dock.style, {
-      width: width, height: 'auto', aspectRatio: '16 / 9', borderRadius: radiusPx
+      width: width, height: 'auto', aspectRatio: '16 / 9', borderRadius: radiusPx,
+      boxShadow: getShadowCSS(v.shadow, 'medium')
     });
     if (this._video) this._video.style.borderRadius = radiusPx;
     if (this._iframe) this._iframe.style.borderRadius = radiusPx;
-    // position presets
-    this._dock.style.top = this._dock.style.right = this._dock.style.bottom = this._dock.style.left = 'auto';
-    this._dock.style.transform = 'none';
-    if (pos === 'bottom-right') { this._dock.style.bottom = bottomM; this._dock.style.right = margin; }
-    else if (pos === 'bottom-left') { this._dock.style.bottom = bottomM; this._dock.style.left = margin; }
-    else if (pos === 'top-right') { this._dock.style.top = margin; this._dock.style.right = margin; }
-    else if (pos === 'top-left') { this._dock.style.top = margin; this._dock.style.left = margin; }
-    else if (pos === 'bottom-center') { this._dock.style.bottom = bottomM; this._dock.style.left = '50%'; this._dock.style.transform = 'translateX(-50%)'; }
+    applyElementAlignment(this._dock, pos, mm, ob, or);
+    // Remembered so close()/reopen() can travel toward the edge the dock actually sits on.
+    this._dockPos = pos;
+    if (this._closed) {
+      // Re-park against the new geometry (resize, theme edit) and re-measure the catch area with it.
+      this._dock.style.transform = this._dockExitTransform();
+      this._removeReopenHotspot();
+      this._mountReopenHotspot();
+    }
 
-    // subtitles — share the same gap from the bottom as the video (its margin)
+    // subtitles
     var s = t.subtitles;
+    var subPos = s.position || 'bottom-center';
+    if (!isMobile && subPos === pos) subPos = alternatePosition(pos);
+    this._subPos = subPos;
     Object.assign(this._subEl.style, {
       maxWidth: (s.maxWidth || 80) + '%',
-      font: (s.weight || 500) + ' ' + (s.size || 16) + 'px ' + (s.font || 'inherit'),
-      color: s.color || '#fff',
-      bottom: bottomM
+      fontFamily: s.font || 'inherit',
+      fontSize: (s.size || 12) + 'px',
+      fontWeight: s.weight || 500,
+      color: s.color || '#fff'
     });
+    applyElementAlignment(this._subEl, subPos, mm, ob, or);
     this._toast.style.bottom = bottomM;
     this._subStyle = s;
+    // The box is only rebuilt when the cue text changes, so restyle any box already on screen.
+    if (this._subSpan) this._styleSubBox(this._subSpan, s);
 
-    // toast
+    // toast — uses frame color for background with auto high-contrast text, mirrors subtitles shadow/radius
     var n = t.notification;
-    Object.assign(this._toast.style, { background: n.bg || '#111', color: n.textColor || '#fff', borderRadius: (n.radius || 8) + 'px', boxShadow: '0 8px 30px rgba(0,0,0,.35)' });
+    var gfColor = (t.guidedFrame && t.guidedFrame.color) || DEFAULT_FRAME_COLOR;
+    var toastTextColor = getContrastTextColor(gfColor);
+    var toastRadius = s.radius || 8;
+    var toastShadow = getShadowCSS(s.shadow || 'none', s.shadowColor);
+    Object.assign(this._toast.style, { background: gfColor, color: toastTextColor, borderRadius: toastRadius + 'px', boxShadow: toastShadow });
     this._toastText.textContent = n.text || DEFAULTS.theme.notification.text;
-    Object.assign(this._toastBtn.style, { background: '#fff', color: '#111' });
 
     if (this._catcher) this._catcher.style.borderRadius = radiusPx;
     if (this._startBtn) this._startBtn.style.borderRadius = radiusPx;
+    if (this._controlBar) this._controlBar.style.borderRadius = '0 0 ' + radiusPx + ' ' + radiusPx;
+    this._updateGuidedFrame();
+    this._updateSubPosition();
+  };
+
+  TourController.prototype._timelineRatio = function () {
+    var d = this.getDuration();
+    if (!d) return 0;
+    return clamp(this.getTime() / d, 0, 1);
+  };
+
+  TourController.prototype._updateTimeline = function () {
+    if (!this._timeline || this._timelineScrubbing) return;
+    this._timeline.value = String(Math.round(this._timelineRatio() * 1000));
+  };
+
+  TourController.prototype._beginTimelineScrub = function () {
+    var self = this;
+    if (this._timelineScrubbing) return;
+    this._timelineScrubbing = true;
+    if (this.state === 'playing') this.pause();
+    this._onTimelineEnd = function () { self._endTimelineScrub(); };
+    document.addEventListener('mouseup', this._onTimelineEnd);
+    document.addEventListener('touchend', this._onTimelineEnd);
+  };
+
+  TourController.prototype._endTimelineScrub = function () {
+    if (!this._timelineScrubbing) return;
+    this._timelineScrubbing = false;
+    if (this._onTimelineEnd) {
+      document.removeEventListener('mouseup', this._onTimelineEnd);
+      document.removeEventListener('touchend', this._onTimelineEnd);
+      this._onTimelineEnd = null;
+    }
+    if (!this._timeline) return;
+    this.seek((+this._timeline.value / 1000) * (this.getDuration() || 0));
+  };
+
+  TourController.prototype._scrubTimelineTo = function (ratio) {
+    ratio = clamp(ratio, 0, 1);
+    var d = this.getDuration();
+    if (!d) return;
+    var sec = ratio * d;
+    if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
+    this._activeTween = null;
+    this._anchorSeconds = sec;
+    this._anchorNow = now();
+    if (this._player && this._playerReady) this._player.setCurrentTime(sec);
+    var idx = -1;
+    for (var i = 0; i < this._points.length; i++) { if (this._points[i].time <= sec) idx = i; else break; }
+    this._activeIdx = idx;
+    this._prevT = sec;
+    this._snapScroll(this.resolveScrollYAtTime(sec));
+    this._syncSubtitles(sec);
+    this._syncHighlights(sec, true);
+    this._emit('timeupdate', sec);
   };
 
   // A minimal Player.js-shaped adapter over a native <video> (used for the editor preview).
@@ -573,7 +834,17 @@
         });
       } catch (e) { /* older adapters may lack getVolume */ }
       p.on('timeupdate', function (d) {
-        if (typeof d.seconds === 'number') { self._anchorSeconds = d.seconds; self._anchorNow = now(); }
+        if (typeof d.seconds === 'number') {
+          // While playing, dead-reckoning runs ahead of sparse player ticks; snapping
+          // backward every timeupdate makes the editor playhead flicker one pixel.
+          if (self.state === 'playing') {
+            var est = self._anchorSeconds + (now() - self._anchorNow) / 1000;
+            if (d.seconds >= est - 0.05) { self._anchorSeconds = d.seconds; self._anchorNow = now(); }
+          } else {
+            self._anchorSeconds = d.seconds;
+            self._anchorNow = now();
+          }
+        }
         if (d.duration) self._duration = d.duration;
       });
       // Refresh the dead-reckoning epoch whenever the player actually starts — otherwise
@@ -595,7 +866,10 @@
 
   // ---- clock --------------------------------------------------------------
   TourController.prototype.getTime = function () {
-    if (this.state === 'playing') return this._anchorSeconds + (now() - this._anchorNow) / 1000;
+    if (this.state === 'playing') {
+      if (this._video) return this._video.currentTime;
+      return this._anchorSeconds + (now() - this._anchorNow) / 1000;
+    }
     return this._anchorSeconds;
   };
   TourController.prototype.getDuration = function () { return this._duration || 0; };
@@ -603,29 +877,72 @@
   // ---- transport ----------------------------------------------------------
   TourController.prototype._beginPlayback = function () {
     this._scrolledWhilePaused = false;
+    this._breakCharge = 0;
+    this._breakExiting = false;
     this._anchorNow = now();
     if (this._player && this._playerReady) this._player.play();
     else this._pendingPlay = true;
     this._setState('playing');
   };
 
+  TourController.prototype._clearAlignHold = function () {
+    if (this._alignHoldTimer) { clearTimeout(this._alignHoldTimer); this._alignHoldTimer = 0; }
+  };
+
+  TourController.prototype._finishPrePlayAlign = function (go, useHold) {
+    var self = this;
+    if (!useHold) { go(); return; }
+    this._clearAlignHold();
+    this._alignHoldTimer = setTimeout(function () {
+      self._alignHoldTimer = 0;
+      if (!self._destroyed && self.state !== 'playing') go();
+    }, RESUME_ALIGN_HOLD_MS);
+  };
+
   TourController.prototype.play = function () {
     var self = this;
     if (this._startBtn) this._startBtn.style.display = 'none';
-    // Pan to the correct scroll position for the current time, then start the video.
-    // Resume-after-user-scroll uses a short tween; first start and editor scrubbing snap instantly.
     var info = this._activeForTime(this._anchorSeconds);
+    var scrollAt = this.resolveScrollYAtTime(this._anchorSeconds);
+    var misaligned = Math.abs(window.scrollY - scrollAt) >= 2;
+    var alignHold = !!(this._scrolledWhilePaused && misaligned);
     var go = function () {
       self._activeIdx = info.idx;
+      self._prevT = self._anchorSeconds; // avoid false seek snap on first playing frame
       self._beginPlayback();
     };
-    var aligned = info.y == null || Math.abs(window.scrollY - info.y) < 2;
+    // Resume a pre-play alignment tween interrupted by pause (not playback scroll — that follows video time).
+    if (this._activeTween && this._activeTween.prePlay && this._activeTween.remainingSec > 0.02) {
+      var tw = this._activeTween;
+      this._activeTween = null;
+      var hold = this._scrolledWhilePaused;
+      this._startTween(tw.targetY, tw.remainingSec, tw.easeF, function () {
+        self._finishPrePlayAlign(go, hold);
+      }, tw.scrollIdx);
+      return;
+    }
+    // Paused mid-tour (incl. after timeline scrub): scroll already tracks video time — align and play.
+    if (this.state === 'paused') {
+      if (this._scrolledWhilePaused && misaligned) {
+        var pt = info.idx >= 0 ? this._points[info.idx] : null;
+        this._startTween(scrollAt, 0.6, easingFn(pt && pt.easing), function () {
+          self._finishPrePlayAlign(go, alignHold);
+        }, info.idx);
+        return;
+      }
+      if (misaligned) this._snapScroll(scrollAt);
+      go();
+      return;
+    }
+    var aligned = !misaligned;
     var snapOnly = this.state === 'idle' || this.state === 'ended'
-      || (this.mode === 'edit' && !this._isLivePreview())
-      || !this._scrolledWhilePaused;
+      || (this.mode === 'edit' && !this._isLivePreview());
     if (aligned) go();
-    else if (snapOnly) { this._snapScroll(info.y); go(); }
-    else this._startTween(info.y, 0.6, easingFn(info.idx >= 0 && this._points[info.idx] && this._points[info.idx].easing), go);
+    else if (snapOnly) { this._snapScroll(scrollAt); go(); }
+    else {
+      var pt0 = info.idx >= 0 ? this._points[info.idx] : null;
+      this._startTween(scrollAt, 0.6, easingFn(pt0 && pt0.easing), go, info.idx);
+    }
   };
 
   TourController.prototype._activeForTime = function (t) {
@@ -641,40 +958,146 @@
       this._anchorSeconds = this.getTime();
       this._anchorNow = now();
     }
+    this._pauseScrollTween();
+    this._clearAlignHold();
     if (this._player && this._playerReady) this._player.pause();
     this._setState('paused');
   };
   TourController.prototype.toggle = function () {
     if (this.state === 'playing') this.pause(); else this.play();
   };
+  // A centre-anchored dock has no edge to leave by, so it drops downward rather than not moving.
+  TourController.prototype._dockExitVector = function () {
+    var vec = exitVector(this._dockPos || 'bottom-right');
+    return (!vec.x && !vec.y) ? { x: 0, y: 1 } : vec;
+  };
+
+  // The dock's box as if it were not parked. We may already be parked when this is asked for, so
+  // the resting transform is applied just long enough to measure; transitions are suppressed and
+  // everything is restored before the browser can paint, so nothing flickers or animates.
+  TourController.prototype._dockRestingRect = function () {
+    var prevTransform = this._dock.style.transform;
+    var prevTransition = this._dock.style.transition;
+    this._dock.style.transition = 'none';
+    this._dock.style.transform = offsetTransform(this._dockPos || 'bottom-right', '0px', '0px');
+    var r = this._dock.getBoundingClientRect();
+    this._dock.style.transform = prevTransform;
+    this._dock.style.transition = prevTransition;
+    return r;
+  };
+
+  // Travel far enough that only DOCK_PEEK_PX of the dock stays on screen — that sliver is the
+  // affordance telling the viewer the player can be brought back. Derived from the resting box, so
+  // margin, editor offset and dock size are all accounted for without re-deriving them here.
+  TourController.prototype._dockExitTransform = function () {
+    var vec = this._dockExitVector();
+    var r = this._dockRestingRect();
+    var dx = 0, dy = 0;
+    if (vec.x > 0) dx = (window.innerWidth - DOCK_PEEK_PX) - r.left;
+    else if (vec.x < 0) dx = DOCK_PEEK_PX - r.right;
+    if (vec.y > 0) dy = (window.innerHeight - DOCK_PEEK_PX) - r.top;
+    else if (vec.y < 0) dy = DOCK_PEEK_PX - r.bottom;
+    return offsetTransform(this._dockPos || 'bottom-right', Math.round(dx) + 'px', Math.round(dy) + 'px');
+  };
+
+  // Closing parks the dock off-screen instead of tearing the tour down, so the viewer can bring it
+  // back by moving the pointer to where it left. Playback pauses, which also releases the scroll
+  // lock (_isLocked requires state 'playing'), so the page is fully browsable while parked.
   TourController.prototype.close = function () {
     if (this._closed) return;
     this._closed = true;
-    var self = this;
     this.pause();
     if (this._closeBtn) this._closeBtn.style.display = 'none';
-    // slide the tour dock off to the right, then tear everything down and unlock the page
     this._subVisible = false; this._updateSubPosition();
     this._hideToast();
+    // Measure before arming the transition so the internal resting-box probe can't animate.
+    var exit = this._dockExitTransform();
     this._dock.style.transition = 'transform .35s ease, opacity .35s ease';
-    this._dock.style.transform = 'translateX(140%)';
-    this._dock.style.opacity = '0';
+    this._dock.style.transform = exit;
+    this._dock.style.opacity = '1';   // stays visible: the peeking sliver is the reopen affordance
+    this._dock.style.pointerEvents = 'none';  // hotspot above it owns the hover/click
+    this._mountReopenHotspot();
     this._emit('close');
-    setTimeout(function () { self.destroy(); }, 380);
+  };
+
+  TourController.prototype.reopen = function () {
+    if (!this._closed || this._destroyed) return;
+    this._closed = false;
+    this._removeReopenHotspot();
+    var pos = this._dockPos || 'bottom-right';
+    this._dock.style.transition = 'transform .35s ease, opacity .35s ease';
+    this._dock.style.transform = offsetTransform(pos, '0px', '0px');
+    this._dock.style.opacity = '1';
+    this._dock.style.pointerEvents = '';
+    // _setState early-returns when the state is unchanged, so mirror its close-button rule here.
+    if (this._closeBtn) {
+      this._closeBtn.style.display = (this.state === 'playing' || this.mode === 'edit') ? 'none' : 'flex';
+    }
+    this._emit('reopen');
+  };
+
+  // Catch area spanning the union of the dock's resting footprint (padded) and the parked sliver,
+  // so the pointer triggers it both "near where it left" and directly on the visible peek. Explicit
+  // px bounds rather than an alignment call, because a large theme margin would otherwise leave the
+  // hotspot short of the viewport edge the sliver sits against.
+  TourController.prototype._mountReopenHotspot = function () {
+    if (this._reopenHotspot || !this._root) return;
+    var self = this;
+    var vec = this._dockExitVector();
+    var r = this._dockRestingRect();
+    var left = r.left - REOPEN_PAD_PX, top = r.top - REOPEN_PAD_PX;
+    var right = r.right + REOPEN_PAD_PX, bottom = r.bottom + REOPEN_PAD_PX;
+    // Reach all the way to the edge the dock parked against.
+    if (vec.x > 0) right = window.innerWidth;
+    else if (vec.x < 0) left = 0;
+    if (vec.y > 0) bottom = window.innerHeight;
+    else if (vec.y < 0) top = 0;
+    left = Math.max(0, left); top = Math.max(0, top);
+    right = Math.min(window.innerWidth, right); bottom = Math.min(window.innerHeight, bottom);
+
+    var hs = el('div', 'tourly-reopen-hotspot');
+    Object.assign(hs.style, {
+      position: 'fixed', pointerEvents: 'auto', background: 'transparent', cursor: 'pointer',
+      left: Math.round(left) + 'px', top: Math.round(top) + 'px',
+      width: Math.round(Math.max(0, right - left)) + 'px',
+      height: Math.round(Math.max(0, bottom - top)) + 'px'
+    });
+    hs.setAttribute('aria-label', 'Reopen tour');
+    this._onReopenHover = function () { self.reopen(); };
+    hs.addEventListener('mouseenter', this._onReopenHover);
+    hs.addEventListener('click', this._onReopenHover);
+    this._root.appendChild(hs);
+    this._reopenHotspot = hs;
+  };
+
+  TourController.prototype._removeReopenHotspot = function () {
+    var hs = this._reopenHotspot;
+    if (!hs) return;
+    if (this._onReopenHover) {
+      hs.removeEventListener('mouseenter', this._onReopenHover);
+      hs.removeEventListener('click', this._onReopenHover);
+      this._onReopenHover = null;
+    }
+    if (hs.parentNode) hs.parentNode.removeChild(hs);
+    this._reopenHotspot = null;
   };
   TourController.prototype.seek = function (sec) {
     sec = clamp(sec, 0, this._duration || sec);
     this._anchorSeconds = sec; this._anchorNow = now();
     this._scrolledWhilePaused = false;
+    this._clearAlignHold();
+    this._activeTween = null;
+    if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
     if (this._player && this._playerReady) this._player.setCurrentTime(sec);
     // relocate scroll immediately (snap) to the region for this time
     this._activeIdx = -2; // force re-evaluation
     this._syncScroll(sec, true);
-    this._syncHighlights(sec);
+    this._syncHighlights(sec, true);
   };
 
   TourController.prototype._setState = function (s) {
     if (this.state === s) return;
+    var wasPlaying = this.state === 'playing';
     this.state = s;
     this._updateSubPosition();   // slide subtitles off when leaving 'playing', back in when resuming
     var playingLike = (s === 'playing');
@@ -687,6 +1110,9 @@
     }
     if (this._closeBtn && !this._closed) this._closeBtn.style.display = (playingLike || this.mode === 'edit') ? 'none' : 'flex';
     if (!playingLike) this._hideToast();
+    if (!playingLike && !this._isLivePreview()) this._resetGuidedFrame(true);
+    else this._updateGuidedFrame();
+    if (wasPlaying && !playingLike) this._syncHighlights(this.getTime(), true);
     this._emit('statechange', s);
     this._emit(s);
   };
@@ -695,11 +1121,89 @@
   TourController.prototype._loop = function () {
     if (this._destroyed) return;
     var t = this.getTime();
+    // Emit before scroll/highlight sync so the editor playhead paints first each frame.
+    this._emit('timeupdate', t);
+    this._updateTimeline();
     this._syncScroll(t, false);
     this._syncSubtitles(t);
-    this._syncHighlights(t);
-    this._emit('timeupdate', t);
+    this._syncHighlights(t, false);
     this._raf = requestAnimationFrame(this._loop);
+  };
+
+  // Editor-only: pin one highlight on screen so a selected item is identifiable even when the
+  // playhead is nowhere near it. Pass null to clear.
+  TourController.prototype.setHighlightPreview = function (id) {
+    id = id || null;
+    var changed = this._hiPreviewId !== id;
+    this._hiPreviewId = id;
+    if (changed || id) this._syncHighlights(this.getTime(), true);
+  };
+
+  // Editor-only: while a corner-radius slider is in use, ring the element that radius applies to
+  // so its shape can be judged directly. Subtitles and the toast are transient, so they're held
+  // on screen for the duration. Pass null to clear.
+  TourController.prototype._radiusPreviewEl = function (target) {
+    if (target === 'player') return this._dock;
+    if (target === 'subtitles') return this._subSpan;
+    if (target === 'notification') return this._toast;
+    return null;
+  };
+
+  TourController.prototype.setRadiusPreview = function (target) {
+    if (RADIUS_PREVIEW_TARGETS.indexOf(target) === -1) target = null;
+    if (this._radiusPreview === target) return;
+    this._radiusPreview = target;
+    this._setSubPlaceholder(target === 'subtitles');
+    this._holdToast(target === 'notification');
+    this._holdFrame(target === 'frame');
+    this._applyRadiusPreview();
+  };
+
+  // While the frame color picker is open, force the guided frame border on screen so its color
+  // can be judged directly (it's normally hidden outside of scroll-lock / live preview).
+  TourController.prototype._holdFrame = function (on) {
+    this._frameHeld = !!on;
+    this._updateGuidedFrame();
+  };
+
+  TourController.prototype._applyRadiusPreview = function () {
+    for (var i = 0; i < RADIUS_PREVIEW_TARGETS.length; i++) {
+      var node = this._radiusPreviewEl(RADIUS_PREVIEW_TARGETS[i]);
+      if (!node) continue;
+      var on = this._radiusPreview === RADIUS_PREVIEW_TARGETS[i];
+      node.style.outline = on ? RADIUS_PREVIEW_RING : '';
+      node.style.outlineOffset = on ? '2px' : '';
+    }
+  };
+
+  // Stand-in subtitle so the shape is visible even when the playhead sits between cues.
+  TourController.prototype._setSubPlaceholder = function (on) {
+    if (on) {
+      if (this._subPlaceholder || this._subVisible) return;
+      this._subPlaceholder = true;
+      this._renderSubBox(SUB_PREVIEW_TEXT);
+      return;
+    }
+    if (!this._subPlaceholder) return;
+    this._subPlaceholder = false;
+    this._lastSub = null;
+    this._syncSubtitles(this.getTime());
+  };
+
+  TourController.prototype._holdToast = function (on) {
+    if (on) {
+      if (this._toastHeld) return;
+      if (this._toastTimer) { clearTimeout(this._toastTimer); this._toastTimer = 0; }
+      this._toastHeld = true;
+      this._toast.style.opacity = '1';
+      this._toast.style.transform = 'translateX(-50%) translateY(0)';
+      this._subLift = this._toast.offsetHeight + 12;
+      this._updateSubPosition();
+      return;
+    }
+    if (!this._toastHeld) return;
+    this._toastHeld = false;
+    this._hideToast();
   };
 
   // ---- scroll engine ------------------------------------------------------
@@ -723,6 +1227,30 @@
     return clamp(y, 0, maxY);
   };
 
+  // Scroll Y at video time t, interpolating through each keyframe's ease window (for live scrubbing).
+  TourController.prototype.resolveScrollYAtTime = function (t) {
+    var pts = this._points;
+    if (!pts.length) return 0;
+    var y = 0;
+    for (var i = 0; i < pts.length; i++) {
+      if (t < pts[i].time) break;
+      var pt = pts[i];
+      var yTo = this.resolveTargetY(pt.target);
+      if (yTo == null) continue;
+      var yFrom = y;
+      var easeDur = pt.ease != null ? pt.ease : DEFAULT_EASE;
+      if (easeDur <= 0) { y = yTo; continue; }
+      var tStart = pt.time;
+      var tEnd = tStart + easeDur;
+      if (t < tEnd) {
+        var p = clamp((t - tStart) / easeDur, 0, 1);
+        return yFrom + (yTo - yFrom) * easingFn(pt.easing)(p);
+      }
+      y = yTo;
+    }
+    return y;
+  };
+
   TourController.prototype._queryTarget = function (target) {
     var sels = [];
     if (target.selector) sels.push(target.selector);
@@ -733,6 +1261,16 @@
     return null;
   };
 
+  TourController.prototype._resolveTweenTargetY = function (tw) {
+    if (tw && tw.scrollIdx >= 0 && this._points[tw.scrollIdx]) {
+      var y = this.resolveTargetY(this._points[tw.scrollIdx].target);
+      if (y != null) return y;
+    }
+    var info = this._activeForTime(this._anchorSeconds);
+    if (info.y != null) return info.y;
+    return tw ? tw.targetY : null;
+  };
+
   TourController.prototype._syncScroll = function (t, forceSnap) {
     var pts = this._points;
     var idx = -1;
@@ -740,46 +1278,82 @@
     var dt = t - this._prevT;
     var isSeek = forceSnap || Math.abs(dt) > SEEK_THRESHOLD;
     this._prevT = t;
+    this._activeIdx = idx;
 
-    if (idx !== this._activeIdx) {
-      this._activeIdx = idx;
-      // idx === -1 means we're before the first keyframe → hold at the top of the page (the tour intro)
-      var y = (idx >= 0) ? this.resolveTargetY(pts[idx].target) : 0;
-      var pt = idx >= 0 ? pts[idx] : null;
-      var ease = (pt && pt.ease != null) ? pt.ease : DEFAULT_EASE;
-      if (y != null) {
-        if (isSeek || this.state !== 'playing') this._snapScroll(y);
-        else this._startTween(y, ease, easingFn(pt && pt.easing));
-      }
-    } else if (isSeek && idx >= 0) {
-      var y2 = this.resolveTargetY(pts[idx].target);
-      if (y2 != null) this._snapScroll(y2);
+    if (isSeek) {
+      if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
+      this._activeTween = null;
+      this._snapScroll(this.resolveScrollYAtTime(t));
+      return;
     }
+
+    // Paused/idle: don't fight user scroll — only seek/scrub relocates the page.
+    if (this.state !== 'playing') return;
+
+    // Playing: scroll follows video time (same curve as timeline scrubbing).
+    if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
+    this._activeTween = null;
+    this._snapScroll(this.resolveScrollYAtTime(t));
   };
 
-  TourController.prototype._startTween = function (targetY, dur, ease, onDone) {
+  TourController.prototype._pauseScrollTween = function () {
+    if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
+    if (!this._activeTween) return;
+    var tw = this._activeTween;
+    var p = clamp((now() - tw.start) / tw.D, 0, 1);
+    tw.progress = p;
+    tw.remainingSec = Math.max(0, (tw.D * (1 - p)) / 1000);
+  };
+
+  TourController.prototype._startTween = function (targetY, dur, ease, onDone, scrollIdx) {
     var easeF = (typeof ease === 'function') ? ease : easeInOutCubic;
     if (this._tweenRAF) cancelAnimationFrame(this._tweenRAF);
     var self = this;
     var startY = window.scrollY;
     var delta = targetY - startY;
-    if (Math.abs(delta) < 1) { if (onDone) onDone(); return; }
-    var start = now();
     var D = Math.max(1, (dur || DEFAULT_EASE) * 1000);
+    if (Math.abs(delta) < 1) {
+      this._activeTween = null;
+      this._tweenRAF = 0;
+      if (onDone) onDone();
+      return;
+    }
+    var start = now();
+    this._activeTween = {
+      startY: startY, targetY: targetY, delta: delta, start: start, D: D,
+      easeF: easeF, onDone: onDone, progress: 0, remainingSec: D / 1000,
+      scrollIdx: scrollIdx == null ? -1 : scrollIdx,
+      // Resume scroll runs before playback starts (state still paused).
+      prePlay: !!(onDone && self.state !== 'playing')
+    };
     function step() {
-      if (self._destroyed) return;
-      var p = clamp((now() - start) / D, 0, 1);
+      if (self._destroyed || !self._activeTween) return;
+      var tw = self._activeTween;
+      var p = clamp((now() - tw.start) / tw.D, 0, 1);
+      tw.progress = p;
+      tw.remainingSec = Math.max(0, (tw.D * (1 - p)) / 1000);
       self._programmatic = true;
-      window.scrollTo(0, startY + delta * easeF(p));
+      window.scrollTo(0, tw.startY + tw.delta * tw.easeF(p));
       self._programmatic = false;
-      if (p < 1) self._tweenRAF = requestAnimationFrame(step);
-      else { self._tweenRAF = 0; if (onDone) onDone(); }
+      if (p < 1) {
+        if (self.state !== 'playing' && !tw.prePlay) {
+          self._tweenRAF = 0;
+          return;
+        }
+        self._tweenRAF = requestAnimationFrame(step);
+        return;
+      }
+      self._tweenRAF = 0;
+      var done = tw.onDone;
+      self._activeTween = null;
+      if (done) done();
     }
     this._tweenRAF = requestAnimationFrame(step);
   };
 
   TourController.prototype._snapScroll = function (y) {
     if (this._tweenRAF) { cancelAnimationFrame(this._tweenRAF); this._tweenRAF = 0; }
+    this._activeTween = null;
     this._programmatic = true;
     window.scrollTo(0, y);
     this._programmatic = false;
@@ -797,21 +1371,37 @@
         }
       }
     }
+    if (this._subPlaceholder) return; // editor is holding a stand-in box for the radius preview
     var cue = manual || auto;
     var text = cue ? cue.text : '';
     if (text === this._lastSub) return;
     this._lastSub = text;
-    if (!text) { this._subVisible = false; this._updateSubPosition(); return; }
-    var s = this._subStyle || DEFAULTS.theme.subtitles;
-    this._subEl.innerHTML = '';
-    var span = el('span');
+    if (!text) {
+      this._subVisible = false;
+      this._subSpan = null;
+      this._updateSubPosition();
+      return;
+    }
+    this._renderSubBox(text);
+  };
+
+  TourController.prototype._styleSubBox = function (span, s) {
     Object.assign(span.style, {
       display: 'inline-block', padding: '4px 12px', lineHeight: '1.35',
-      background: s.bg || 'rgba(0,0,0,.62)', borderRadius: (s.radius || 8) + 'px'
+      background: s.bg || 'rgba(0,0,0,.62)', borderRadius: (s.radius || 8) + 'px',
+      boxShadow: getShadowCSS(s.shadow, 'none')
     });
+  };
+
+  TourController.prototype._renderSubBox = function (text) {
+    this._subEl.innerHTML = '';
+    var span = el('span');
+    this._styleSubBox(span, this._subStyle || DEFAULTS.theme.subtitles);
     span.textContent = text;
     this._subEl.appendChild(span);
+    this._subSpan = span;
     this._subVisible = true;
+    this._applyRadiusPreview();
     this._updateSubPosition();
   };
 
@@ -823,7 +1413,12 @@
     var s = document.createElement('style');
     s.id = 'tourly-hi-styles';
     s.textContent = [
-      '.tourly-hi-layer{position:fixed;inset:0;pointer-events:none;z-index:2147482000;overflow:visible}',
+      // MUST NOT create a stacking context. `position:fixed` creates one all by itself (z-index is
+      // irrelevant), which would trap every child's z-index inside this layer and make the
+      // per-target sync in _layoutHiOverlay inert. A zero-size `position:absolute` box with
+      // z-index:auto creates none, so the overlays — which are themselves position:fixed, and so
+      // still lay out against the viewport — compete directly with real page elements.
+      '.tourly-hi-layer{position:absolute;top:0;left:0;width:0;height:0;pointer-events:none;overflow:visible}',
       '.tourly-hi-overlay{position:fixed;pointer-events:none;box-sizing:border-box;background:transparent;border:none;opacity:1;transform:translateZ(0);overflow:visible}',
       '.tourly-hi-ring-shell{position:absolute;overflow:visible;pointer-events:none}',
       '.tourly-hi-ring{position:absolute;inset:0;width:100%;height:100%;overflow:visible}',
@@ -854,16 +1449,41 @@
       '.tourly-hi-target-text.tourly-hi-anim-pulse{animation:tourlyHiTextPulse 1.35s ease-in-out infinite}',
       '@keyframes tourlyHiTextPulse{0%{text-shadow:0 0 0 transparent,0 0 0 transparent}20%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}40%{text-shadow:0 0 0 transparent,0 0 0 transparent}60%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 16px var(--tly-hi-color,#ff4d8d)}80%{text-shadow:0 0 0 transparent,0 0 0 transparent}100%{text-shadow:0 0 0 transparent,0 0 0 transparent}}',
       '.tourly-hi-target-text.tourly-hi-anim-sweep{animation-name:tourlyHiTextSweep;animation-duration:var(--tly-hi-duration,2.4s);animation-timing-function:ease-in-out;animation-iteration-count:1;animation-fill-mode:both}',
-      '@keyframes tourlyHiTextSweep{0%{text-shadow:0 0 8px transparent,0 0 18px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 18px transparent}}'
+      '@keyframes tourlyHiTextSweep{0%{text-shadow:0 0 8px transparent,0 0 18px transparent}25%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}75%{text-shadow:0 0 8px var(--tly-hi-color,#ff4d8d),0 0 18px var(--tly-hi-color,#ff4d8d)}100%{text-shadow:0 0 8px transparent,0 0 18px transparent}}',
+      '.tourly-hi-underlay{position:fixed;inset:0;pointer-events:none;z-index:1}'
     ].join('');
     document.head.appendChild(s);
   };
 
+  TourController.prototype._ensureHiUnderlay = function () {
+    if (this._hiUnderlay) return this._hiUnderlay;
+    this._hiUnderlay = el('div', 'tourly-hi-underlay');
+    var body = document.body || document.documentElement;
+    body.insertBefore(this._hiUnderlay, body.firstChild);
+    return this._hiUnderlay;
+  };
+
+  // The layer deliberately carries no z-index in either mode: any value here would create a
+  // stacking context and re-trap the per-target z-index each overlay sets in _layoutHiOverlay.
+  // Editor chrome stays above highlights on its own — the player root defaults to z-index 999
+  // (overridable via theme.video.zIndex / data-tourly-z-index) and the editor panel sits higher
+  // still (2147483646).
+  TourController.prototype._applyHiLayerZ = function () {
+    if (!this._hiLayer) return;
+    var body = document.body || document.documentElement;
+    if (this._hiLayer.parentNode !== body) body.appendChild(this._hiLayer);
+    this._hiLayer.style.removeProperty('z-index');
+  };
+
   TourController.prototype._buildHiLayer = function () {
-    if (this._hiLayer) return;
+    if (this._hiLayer) {
+      this._applyHiLayerZ();
+      return;
+    }
     this._ensureHiStyles();
     this._hiLayer = el('div', 'tourly-hi-layer');
     (document.body || document.documentElement).appendChild(this._hiLayer);
+    this._applyHiLayerZ();
     this._hiOverlays = {};
     this._hiActiveKey = '';
     this._hiTargetStyleKey = {};
@@ -879,6 +1499,25 @@
     return Math.max(0.1, (h.end || 0) - (h.start || 0));
   };
 
+  // Peak visibility for one-shot keyframes (25–75% hold); pulse reads best mid-span.
+  TourController.prototype._hiPreviewSampleTime = function (h) {
+    var span = Math.max(0, (h.end || 0) - (h.start || 0));
+    if (span <= 0) return h.start || 0;
+    return h.start + span * 0.5;
+  };
+
+  // Editor selection preview: mid-span follows the playhead; at/before start or at/after end
+  // park on the peak frame so a picked item is always identifiable (h.end is faded out).
+  TourController.prototype._hiRenderEntry = function (h, t, previewId) {
+    var inside = t >= h.start && t < h.end;
+    var pinned = previewId != null && String(previewId) === String(h.id);
+    if (!inside && !pinned) return null;
+    if (pinned && (t <= h.start || t >= h.end)) {
+      return { h: h, at: this._hiPreviewSampleTime(h), preview: true };
+    }
+    return { h: h, at: t, preview: false };
+  };
+
   TourController.prototype._hiTargetList = function (id) {
     var nodes = this._hiTargetNodes[id];
     if (!nodes) return [];
@@ -892,59 +1531,76 @@
     return ov.querySelector('.tourly-hi-ring-path');
   };
 
-  TourController.prototype._applyHiAnimTiming = function (ov, h, t, anim, kind, textNode, forceSync) {
-    if (anim === 'pulse') return;
-    var span = this._hiSpan(h);
-    var dur = span.toFixed(3) + 's';
-    var elapsed = clamp(t - h.start, 0, span);
-    var delay = (-elapsed).toFixed(3) + 's';
-    var lastT = ov._hiAnimLastT;
-    var seeked = forceSync || lastT == null || Math.abs(t - lastT) > SEEK_THRESHOLD;
-    ov._hiAnimLastT = t;
-    ov.style.setProperty('--tly-hi-duration', dur);
-    if (!seeked && ov._hiAnimTimed) return;
-    ov._hiAnimTimed = true;
-    if (anim === 'text-glow') {
-      var targets = this._hiTargetList(h.id);
-      for (var ti = 0; ti < targets.length; ti++) {
-        var tg = targets[ti];
-        tg.style.setProperty('--tly-hi-duration', dur);
-        tg.style.animationDuration = dur;
-        tg.style.animationDelay = delay;
-        tg.style.animationIterationCount = '1';
-        tg.style.animationFillMode = 'both';
-      }
-      return;
-    }
-    var el = this._hiAnimEl(ov, anim, kind, textNode);
+  TourController.prototype._stampHiAnimEl = function (el, dur, delay, playState, loop) {
     if (!el) return;
     el.style.setProperty('--tly-hi-duration', dur);
     el.style.animationDuration = dur;
     el.style.animationDelay = delay;
-    el.style.animationIterationCount = '1';
+    el.style.animationIterationCount = loop ? 'infinite' : '1';
     el.style.animationFillMode = 'both';
+    el.style.animationPlayState = playState;
+  };
+
+  TourController.prototype._applyHiAnimTiming = function (ov, h, t, anim, kind, textNode, forceSync, isPreview) {
+    var span = this._hiSpan(h);
+    // Preview: pulse loops so it must run; one-shots park paused on the sampled peak frame.
+    var playing = this.state === 'playing' || (!!isPreview && anim === 'pulse');
+    var lastT = ov._hiAnimLastT;
+    var seeked = forceSync || lastT == null || Math.abs(t - lastT) > SEEK_THRESHOLD;
+    ov._hiAnimLastT = t;
+
+    // While playing, follow video time each frame (like scroll). When paused, update only on seek/scrub.
+    if (!playing && !seeked && !forceSync && !isPreview) return;
+
+    var playState = playing ? 'running' : 'paused';
+    var PULSE_DUR = 1.35;
+
+    if (anim === 'pulse') {
+      var pulseElapsed = clamp(t - h.start, 0, span);
+      var phase = pulseElapsed % PULSE_DUR;
+      var pulseDur = PULSE_DUR.toFixed(3) + 's';
+      var pulseDelay = (-phase).toFixed(3) + 's';
+      ov.style.setProperty('--tly-hi-duration', pulseDur);
+      if (kind === 'text') {
+        var pulseTargets = textNode ? [textNode] : this._hiTargetList(h.id);
+        for (var pi = 0; pi < pulseTargets.length; pi++) {
+          this._stampHiAnimEl(pulseTargets[pi], pulseDur, pulseDelay, playState, true);
+        }
+      } else {
+        this._stampHiAnimEl(ov.querySelector('.tourly-hi-ring-path'), pulseDur, pulseDelay, playState, true);
+        this._stampHiAnimEl(ov.querySelector('.tourly-hi-glow-halo'), pulseDur, pulseDelay, playState, true);
+      }
+      return;
+    }
+
+    var dur = span.toFixed(3) + 's';
+    var elapsed = clamp(t - h.start, 0, span);
+    var delay = (-elapsed).toFixed(3) + 's';
+    ov.style.setProperty('--tly-hi-duration', dur);
+
+    if (anim === 'text-glow') {
+      var targets = this._hiTargetList(h.id);
+      for (var ti = 0; ti < targets.length; ti++) {
+        this._stampHiAnimEl(targets[ti], dur, delay, playState, false);
+      }
+      return;
+    }
+
+    var el = this._hiAnimEl(ov, anim, kind, textNode);
+    this._stampHiAnimEl(el, dur, delay, playState, false);
     if (anim === 'box-glow') {
       var ringPath = ov.querySelector('.tourly-hi-ring-path');
       var glowPath = ov.querySelector('.tourly-hi-ring-glow');
       var halo = ov.querySelector('.tourly-hi-glow-halo');
-      [ringPath, glowPath, halo].forEach(function (node) {
-        if (!node) return;
-        node.style.setProperty('--tly-hi-duration', dur);
-        node.style.animationDuration = dur;
-        node.style.animationDelay = delay;
-        node.style.animationIterationCount = '1';
-        node.style.animationFillMode = 'both';
-      });
+      this._stampHiAnimEl(ringPath, dur, delay, playState, false);
+      this._stampHiAnimEl(glowPath, dur, delay, playState, false);
+      this._stampHiAnimEl(halo, dur, delay, playState, false);
     }
     if (anim === 'sweep') {
-      var glowPath = ov.querySelector('.tourly-hi-ring-glow');
-      if (glowPath) {
-        glowPath.style.setProperty('--tly-hi-duration', dur);
-        glowPath.style.animationDuration = dur;
-        glowPath.style.animationDelay = delay;
-        glowPath.style.animationIterationCount = '1';
-        glowPath.style.animationFillMode = 'both';
-      }
+      var sweepGlow = ov.querySelector('.tourly-hi-ring-glow');
+      var sweepPath = ov.querySelector('.tourly-hi-ring-path');
+      this._stampHiAnimEl(sweepGlow, dur, delay, playState, false);
+      this._stampHiAnimEl(sweepPath, dur, delay, playState, false);
     }
   };
 
@@ -1216,6 +1872,13 @@
     var m = this._measureHighlightForOverlay(node, ov);
     var pad = m.pad;
     var r = m.rect;
+    // Paint the ring at the depth its target paints at, so page chrome that covers the target
+    // covers the ring too. Cached per node — this runs on every timeupdate.
+    if (ov._hiZNode !== node) {
+      ov._hiZNode = node;
+      ov._hiZ = String(rootStackingZ(node));
+    }
+    if (ov.style.zIndex !== ov._hiZ) ov.style.zIndex = ov._hiZ;
     var ringOut = hiRingOutset(anim);
     if (anim === 'text-glow') {
       if (!nodeHasTextContent(node)) {
@@ -1259,7 +1922,7 @@
     return m;
   };
 
-  TourController.prototype._syncHighlights = function (t) {
+  TourController.prototype._syncHighlights = function (t, forceSync) {
     var list = this.config.highlights || [];
     if (!list.length) {
       if (this._hiLayer) {
@@ -1272,15 +1935,17 @@
       return;
     }
     this._buildHiLayer();
-    var active = [], i;
+    var active = [], i, h, entry;
     for (i = 0; i < list.length; i++) {
-      var h = list[i];
-      if (t >= h.start && t < h.end) active.push(h);
+      entry = this._hiRenderEntry(list[i], t, this._hiPreviewId);
+      if (entry) active.push(entry);
     }
-    var activeKey = active.map(function (h) { return h.id; }).join(',');
+    var activeKey = active.map(function (e) { return e.h.id + (e.preview ? ':p' : ''); }).join(',');
     var seen = {};
     for (i = 0; i < active.length; i++) {
-      h = active[i];
+      var entry = active[i];
+      h = entry.h;
+      var at = entry.at;
       seen[h.id] = true;
       var ov = this._hiOverlays[h.id];
       if (!ov) {
@@ -1304,7 +1969,6 @@
         ov._hiStyleKey = styleKey;
         ov.className = 'tourly-hi-overlay tourly-hi-kind-' + kind + ' tourly-hi-anim-' + anim;
         ov.style.setProperty('--tly-hi-color', color);
-        ov._hiAnimTimed = false;
         ov._hiAnimLastT = null;
       }
       m = this._layoutHiOverlay(h, ov, anim);
@@ -1320,13 +1984,13 @@
           }
         }
         var tg0 = this._hiTargetList(h.id)[0];
-        this._applyHiAnimTiming(ov, h, t, anim, kind, tg0, styleChanged);
+        this._applyHiAnimTiming(ov, h, at, anim, kind, tg0, styleChanged || forceSync, entry.preview);
       } else if (m.textLike && anim !== 'box-glow') {
         if (styleChanged || !this._hiTargetNodes[h.id]) this._applyHiTarget(h, m, anim);
-        this._applyHiAnimTiming(ov, h, t, anim, kind, m.node, styleChanged);
+        this._applyHiAnimTiming(ov, h, at, anim, kind, m.node, styleChanged || forceSync, entry.preview);
       } else {
         if (styleChanged) this._restartHiAnim(ov);
-        this._applyHiAnimTiming(ov, h, t, anim, kind, null, styleChanged);
+        this._applyHiAnimTiming(ov, h, at, anim, kind, null, styleChanged || forceSync, entry.preview);
       }
     }
     Object.keys(this._hiOverlays).forEach(function (id) {
@@ -1334,7 +1998,6 @@
         this._hiOverlays[id].style.display = 'none';
         this._clearHiTargetById(id);
         delete this._hiOverlays[id]._hiStyleKey;
-        delete this._hiOverlays[id]._hiAnimTimed;
         delete this._hiOverlays[id]._hiAnimLastT;
         delete this._hiOverlays[id]._hiMode;
       }
@@ -1347,15 +2010,20 @@
     var lift = this._subLift || 0;
     var playing = this.state === 'playing';
     var show = playing || (this.mode === 'edit' && !this._isLivePreview());
-    var y, opacity;
+    var pos = this._subPos || 'bottom-center';
+    var vec = exitVector(pos);
+    var dx = 0, dy = 0, opacity;
     if (this._subVisible && show) {
-      y = -lift; opacity = '1';                 // shown (lifted above the toast when present)
-    } else if (this._subVisible && !show) {
-      y = 120; opacity = '0';                   // paused with an active cue → slide off the bottom
+      dy = -lift; opacity = '1';
     } else {
-      y = 8; opacity = '0';                     // no active cue → subtle hidden rest state
+      // Leave toward the edge the cue is anchored to rather than always downward, so a top-placed
+      // subtitle exits upward and a side-placed one exits sideways.
+      var dist = this._subVisible ? SUB_EXIT_PX : SUB_IDLE_PX;
+      dx = vec.x * dist;
+      dy = vec.y * dist;
+      opacity = '0';
     }
-    this._subEl.style.transform = 'translateX(-50%) translateY(' + y + 'px)';
+    this._subEl.style.transform = offsetTransform(pos, dx + 'px', dy + 'px');
     this._subEl.style.opacity = opacity;
   };
 
@@ -1399,8 +2067,107 @@
     this._volBtn.title = v === 0 ? 'Unmute' : 'Mute';
   };
 
+  // Editor-only chrome (always-on guided frame, held notification, idle subtitle). Gated on mode as
+  // well as the flag so a stray `previewTour` in a published config can never pin preview-only
+  // furniture onto a real embed — the flag alone is not trusted.
   TourController.prototype._isLivePreview = function () {
-    return !!(this.config.behavior && this.config.behavior.previewTour);
+    return this.mode === 'edit' && !!(this.config.behavior && this.config.behavior.previewTour);
+  };
+
+  TourController.prototype._guidedFrameColor = function () {
+    var gf = (this.config.theme && this.config.theme.guidedFrame) || {};
+    return gf.color || DEFAULT_FRAME_COLOR;
+  };
+
+  TourController.prototype._breakInsetPx = function () {
+    return (this._breakCharge / BREAK_CHARGE_MAX) * BREAK_MAX_INSET;
+  };
+
+  TourController.prototype._clearBreakIdleTimer = function () {
+    if (this._breakIdleTimer) { clearTimeout(this._breakIdleTimer); this._breakIdleTimer = 0; }
+  };
+
+  TourController.prototype._paintGuidedFrame = function (insetPx, animate) {
+    if (!this._guidedFrame) return;
+    var frame = this._guidedFrame;
+    var always = this._isLivePreview() || this._frameHeld;
+    var color = this._guidedFrameColor();
+    var show = always || insetPx > 0.05;
+    var dur = BREAK_RETRACT_MS + 'ms';
+    frame.style.transition = animate ? ('box-shadow ' + dur + ' ease-out') : 'none';
+    frame.style.transform = 'none';
+    frame.style.borderWidth = this._frameHeld ? GUIDED_FRAME_BORDER_PREVIEW : GUIDED_FRAME_BORDER;
+    if (!show) {
+      frame.style.opacity = '0';
+      frame.style.borderColor = 'transparent';
+      frame.style.boxShadow = 'none';
+      return;
+    }
+    frame.style.opacity = '1';
+    frame.style.borderColor = color;
+    frame.style.boxShadow = insetPx > 0.05
+      ? ('inset 0 0 0 ' + insetPx.toFixed(2) + 'px ' + color)
+      : 'none';
+  };
+
+  TourController.prototype._finishGuidedFrameRetract = function () {
+    this._breakCharge = 0;
+    this._breakExiting = false;
+    this._paintGuidedFrame(0, false);
+  };
+
+  TourController.prototype._retractGuidedFrame = function () {
+    var self = this;
+    if (!this._guidedFrame || this._breakExiting) return;
+    this._clearBreakIdleTimer();
+    if (this._breakInsetPx() <= 0.05) {
+      this._breakCharge = 0;
+      if (!this._isLivePreview()) this._paintGuidedFrame(0, false);
+      else this._paintGuidedFrame(0, false);
+      return;
+    }
+    this._breakExiting = true;
+    this._paintGuidedFrame(0, true);
+    setTimeout(function () {
+      if (self._destroyed) return;
+      self._finishGuidedFrameRetract();
+    }, BREAK_RETRACT_MS + 16);
+  };
+
+  TourController.prototype._resetGuidedFrame = function (instant) {
+    if (!this._guidedFrame) return;
+    this._clearBreakIdleTimer();
+    this._breakCharge = 0;
+    this._breakExiting = false;
+    this._guidedFrame.style.transition = instant ? 'none' : '';
+    this._guidedFrame.style.transform = 'none';
+    this._paintGuidedFrame(0, !instant && this._isLivePreview());
+  };
+
+  TourController.prototype._updateGuidedFrame = function () {
+    this._paintGuidedFrame(this._breakInsetPx(), false);
+  };
+
+  TourController.prototype._feedBreakCharge = function (weight) {
+    if (!this._isLocked() || this._breakExiting) return;
+    this._clearBreakIdleTimer();
+    this._breakCharge = Math.min(BREAK_CHARGE_MAX, this._breakCharge + weight);
+    this._paintGuidedFrame(this._breakInsetPx(), false);
+    if (this._breakCharge >= BREAK_CHARGE_MAX) {
+      this._triggerScrollBreak();
+      return;
+    }
+    var self = this;
+    this._breakIdleTimer = setTimeout(function () { self._retractGuidedFrame(); }, BREAK_IDLE_MS);
+  };
+
+  TourController.prototype._triggerScrollBreak = function () {
+    if (this._breakExiting || !this._guidedFrame) return;
+    this._clearBreakIdleTimer();
+    this._hideToast();
+    this._scrolledWhilePaused = true;
+    this.pause(); // saves pre-play alignment tween; playback scroll follows video time on resume
+    this._retractGuidedFrame();
   };
 
   // ---- scroll lock + toast ------------------------------------------------
@@ -1410,16 +2177,20 @@
 
   TourController.prototype._bindListeners = function () {
     var self = this;
-    this._onWheel = function (e) { if (self._isLocked()) { e.preventDefault(); self._showToast(); self._registerAttempt(Math.min(Math.abs(e.deltaY) || 40, 120)); } };
-    this._onTouch = function (e) { if (self._isLocked()) { e.preventDefault(); self._showToast(); self._registerAttempt(60); } };
-    this._onKey = function (e) { if (self._isLocked() && SCROLL_KEYS[e.key]) { e.preventDefault(); self._showToast(); self._registerAttempt(90); } };
+    this._onWheel = function (e) { if (self._isLocked()) { e.preventDefault(); self._feedBreakCharge(Math.min(Math.abs(e.deltaY) || 40, 120)); } };
+    this._onTouch = function (e) {
+      if (!self._isLocked()) return;
+      e.preventDefault();
+      self._feedBreakCharge(60);
+    };
+    this._onKey = function (e) { if (self._isLocked() && SCROLL_KEYS[e.key]) { e.preventDefault(); self._feedBreakCharge(90); } };
     this._onResize = debounce(function () {
       self._applyTheme();
       if (self._activeIdx >= 0 && self._points[self._activeIdx]) {
         var y = self.resolveTargetY(self._points[self._activeIdx].target);
         if (y != null) self._snapScroll(y);
       }
-      self._syncHighlights(self.getTime());
+      self._syncHighlights(self.getTime(), true);
     }, 150);
     // When the tab is hidden the video throttles and rAF pauses; auto-pause so the
     // dead-reckoned clock can't drift ahead of the real video. User resumes on return.
@@ -1473,44 +2244,38 @@
     this._toastTimer = setTimeout(function () { self._hideToast(); }, TOAST_MS);
   };
   TourController.prototype._hideToast = function () {
+    if (this._toastHeld) return; // held open by the editor's radius preview
     this._toast.style.opacity = '0';
     this._toast.style.transform = 'translateX(-50%) translateY(24px)';
     this._subLift = 0;
     this._updateSubPosition();
   };
 
-  // Sustained scroll attempts (not a single nudge) auto-pause the tour.
-  TourController.prototype._registerAttempt = function (weight) {
-    var tnow = now();
-    var WINDOW = 1400, THRESHOLD = 480;
-    this._attempts.push({ t: tnow, w: weight });
-    this._attempts = this._attempts.filter(function (a) { return tnow - a.t <= WINDOW; });
-    var sum = 0;
-    for (var i = 0; i < this._attempts.length; i++) sum += this._attempts[i].w;
-    if (sum >= THRESHOLD) {
-      this._attempts.length = 0;
-      this.pause();          // this releases the lock and hides the toast via _setState
-    }
-  };
-
   // ---- editor helpers -----------------------------------------------------
   TourController.prototype.setConfig = function (cfg) {
-    var wasState = this.state;
     this.config = normalizeConfig(cfg);
     this._resortPoints();
     this._applyTheme();
     this._activeIdx = -2;              // force scroll re-evaluation
     this._lastSub = null;
-    this._syncScroll(this.getTime(), true);
+    // While paused/idle (typical when editing Appearance), don't yank the page —
+    // only seek/scrub should relocate scroll. While playing, re-snap so the tour
+    // stays aligned after theme or point edits.
+    this._syncScroll(this.getTime(), this.state === 'playing');
     this._syncSubtitles(this.getTime());
-    this._syncHighlights(this.getTime());
+    this._syncHighlights(this.getTime(), true);
     if (this._startBtn) {
       var hideStart = this.state === 'playing' || (this.mode === 'edit' && !this._isLivePreview());
       this._startBtn.style.display = hideStart ? 'none' : 'flex';
     }
     this._updateSubPosition();
+    this._updateGuidedFrame();
     this._emit('configchange', this.config);
-    void wasState;
+  };
+  TourController.prototype.setEditorUiRaised = function (raised) {
+    this._editorUiRaised = !!raised;
+    this._applyHiLayerZ();
+    return this;
   };
   TourController.prototype.setPreviewVisible = function (visible) {
     if (!this._root) return this;
@@ -1518,9 +2283,11 @@
       this._root.style.display = '';
       this._syncSubtitles(this.getTime());
       this._updateSubPosition();
+      this._updateGuidedFrame();
     } else {
       if (this.state === 'playing') this.pause();
       this._root.style.display = 'none';
+      this._resetGuidedFrame(true);
     }
     return this;
   };
@@ -1561,8 +2328,16 @@
   // ---- teardown -----------------------------------------------------------
   TourController.prototype.destroy = function () {
     this._destroyed = true;
+    this._removeReopenHotspot();
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._tweenRAF) cancelAnimationFrame(this._tweenRAF);
+    this._clearBreakIdleTimer();
+    this._clearAlignHold();
+    if (this._onTimelineEnd) {
+      document.removeEventListener('mouseup', this._onTimelineEnd);
+      document.removeEventListener('touchend', this._onTimelineEnd);
+      this._onTimelineEnd = null;
+    }
     window.removeEventListener('wheel', this._onWheel, { passive: false });
     window.removeEventListener('touchmove', this._onTouch, { passive: false });
     window.removeEventListener('keydown', this._onKey, { passive: false });
@@ -1611,11 +2386,30 @@
   // Concise export mode: a script tag with a data-tourly-id attribute and no inline config —
   // fetched by id at load time instead. Silent no-op on any failure (offline backend, deleted
   // tour, etc.) — a page must never break because a tour couldn't load.
+  // Optional data-tourly-z-index on that same tag overrides theme.video.zIndex (the one page-author
+  // knob without republishing the tour).
   // NOTE: this whole file is inlined verbatim into self-contained exports inside a real script
   // element — never write a literal closing script tag anywhere in this file, comments included
   // (e.g. spell it out in prose, or split it across a concatenation), or a browser's HTML parser
   // will terminate the surrounding tag early and corrupt the page.
-  function fetchAndMount(tourId) {
+  function readEmbedZIndex(scriptEl) {
+    if (!scriptEl) return null;
+    var raw = scriptEl.getAttribute('data-tourly-z-index');
+    if (raw == null || raw === '') return null;
+    var n = parseInt(raw, 10);
+    return isFinite(n) ? n : null;
+  }
+
+  function applyEmbedOverrides(config, overrides) {
+    if (!config || !overrides) return config;
+    if (overrides.zIndex != null) {
+      config.theme = config.theme || {};
+      config.theme.video = Object.assign({}, config.theme.video, { zIndex: overrides.zIndex });
+    }
+    return config;
+  }
+
+  function fetchAndMount(tourId, overrides) {
     var url = TOURLY_BACKEND.url + '/rest/v1/rpc/get_tour_config';
     fetch(url, {
       method: 'POST',
@@ -1623,7 +2417,10 @@
       body: JSON.stringify({ tour_id: tourId })
     })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (config) { if (config) doMount(config); })
+      .then(function (config) {
+        if (!config) return;
+        doMount(applyEmbedOverrides(config, overrides));
+      })
       .catch(function () { /* offline/unreachable — silently skip, page still works */ });
   }
 
@@ -1632,7 +2429,9 @@
     if (window.TOURLY_CONFIG) { doMount(window.TOURLY_CONFIG); return; }
     var ref = document.querySelector('script[data-tourly-id]');
     var tourId = ref && ref.getAttribute('data-tourly-id');
-    if (tourId) fetchAndMount(tourId);
+    if (!tourId) return;
+    var z = readEmbedZIndex(ref);
+    fetchAndMount(tourId, z != null ? { zIndex: z } : null);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', autoMount);
   else autoMount();
