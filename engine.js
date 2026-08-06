@@ -39,7 +39,10 @@
   var DEFAULT_FRAME_COLOR = '#eab308';
   var GUIDED_FRAME_BORDER = '2px';       // normal border width
   var GUIDED_FRAME_BORDER_PREVIEW = '4px'; // thicker while the color picker holds it on screen
-  var DOCK_PEEK_PX = 16;        // px of the dock left on screen when parked, as the reopen affordance
+  var DOCK_PEEK_PX = 16;        // px of the dock left on screen when it peeks back in
+  var DOCK_SHADOW_CLEAR_PX = 64;// extra travel past the edge so the dock's shadow clears too
+  var REOPEN_ARM_MS = 900;      // dead time after closing before the dock will come back
+  var REOPEN_BAND_PX = 72;      // how far inward from the parked edge counts as "near where it left"
   var SUB_EXIT_PX = 120;        // px a live cue travels when playback stops
   var SUB_IDLE_PX = 8;          // px nudge for a cue that has nothing to show
   var REOPEN_PAD_PX = 28;       // how far outside the dock's old box the reopen hotspot reaches
@@ -439,6 +442,25 @@
       this._catcher = catcher;
     }
 
+    // Hover pause/play affordance. Clicking the video already toggled playback, but nothing on
+    // screen said so — this makes it discoverable. Purely an icon: pointer-events stay off so the
+    // click-catcher underneath keeps owning the toggle and there is no second click target.
+    var hoverPause = el('div', 'tourly-hoverpause');
+    Object.assign(hoverPause.style, {
+      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+      width: '54px', height: '54px', borderRadius: '50%', zIndex: 5,
+      background: 'rgba(0,0,0,.55)', color: '#fff', pointerEvents: 'none',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      opacity: '0', transition: 'opacity .18s ease', font: '600 20px system-ui, sans-serif'
+    });
+    dock.appendChild(hoverPause);
+    this._hoverPause = hoverPause;
+    this._dockHovered = false;
+    this._onDockEnter = function () { self._dockHovered = true; self._updateHoverPause(); };
+    this._onDockLeave = function () { self._dockHovered = false; self._updateHoverPause(); };
+    dock.addEventListener('mouseenter', this._onDockEnter);
+    dock.addEventListener('mouseleave', this._onDockLeave);
+
     // subtitle (CC) toggle — top-left
     var cc = el('button', 'tourly-cc');
     cc.type = 'button';
@@ -682,11 +704,14 @@
     if (this._video) this._video.style.borderRadius = radiusPx;
     if (this._iframe) this._iframe.style.borderRadius = radiusPx;
     applyElementAlignment(this._dock, pos, mm, ob, or);
-    // Remembered so close()/reopen() can travel toward the edge the dock actually sits on.
+    // Remembered so close()/reopen() can travel toward the edge the dock actually sits on. The
+    // resting transform is captured verbatim here — the one place it is authoritative — so reopen()
+    // restores exactly what alignment produced ('none' for corners) rather than an equivalent.
     this._dockPos = pos;
+    this._dockRestTransform = this._dock.style.transform || 'none';
     if (this._closed) {
       // Re-park against the new geometry (resize, theme edit) and re-measure the catch area with it.
-      this._dock.style.transform = this._dockExitTransform();
+      this._dock.style.transform = this._dockParkTransform(this._peeking);
       this._removeReopenHotspot();
       this._mountReopenHotspot();
     }
@@ -966,8 +991,16 @@
   TourController.prototype.toggle = function () {
     if (this.state === 'playing') this.pause(); else this.play();
   };
+  TourController.prototype._isMobile = function () {
+    var bp = (this.config.behavior && this.config.behavior.mobile && this.config.behavior.mobile.breakpoint) || 768;
+    return window.matchMedia('(max-width:' + bp + 'px)').matches;
+  };
+
   // A centre-anchored dock has no edge to leave by, so it drops downward rather than not moving.
+  // Mobile always parks to the right regardless of placement: there is no hover to reveal it, and
+  // a bottom-parked dock is the one people clip with their thumb while scrolling.
   TourController.prototype._dockExitVector = function () {
+    if (this._isMobile()) return { x: 1, y: 0 };
     var vec = exitVector(this._dockPos || 'bottom-right');
     return (!vec.x && !vec.y) ? { x: 0, y: 1 } : vec;
   };
@@ -986,17 +1019,18 @@
     return r;
   };
 
-  // Travel far enough that only DOCK_PEEK_PX of the dock stays on screen — that sliver is the
-  // affordance telling the viewer the player can be brought back. Derived from the resting box, so
-  // margin, editor offset and dock size are all accounted for without re-deriving them here.
-  TourController.prototype._dockExitTransform = function () {
+  // Where the dock sits while parked. `peek` leaves DOCK_PEEK_PX on screen; otherwise it travels
+  // DOCK_SHADOW_CLEAR_PX *past* the edge so the drop shadow clears the viewport too. Derived from
+  // the resting box, so margin, editor offset and dock size need no re-deriving here.
+  TourController.prototype._dockParkTransform = function (peek) {
     var vec = this._dockExitVector();
     var r = this._dockRestingRect();
+    var keep = peek ? DOCK_PEEK_PX : -DOCK_SHADOW_CLEAR_PX;
     var dx = 0, dy = 0;
-    if (vec.x > 0) dx = (window.innerWidth - DOCK_PEEK_PX) - r.left;
-    else if (vec.x < 0) dx = DOCK_PEEK_PX - r.right;
-    if (vec.y > 0) dy = (window.innerHeight - DOCK_PEEK_PX) - r.top;
-    else if (vec.y < 0) dy = DOCK_PEEK_PX - r.bottom;
+    if (vec.x > 0) dx = (window.innerWidth - keep) - r.left;
+    else if (vec.x < 0) dx = keep - r.right;
+    if (vec.y > 0) dy = (window.innerHeight - keep) - r.top;
+    else if (vec.y < 0) dy = keep - r.bottom;
     return offsetTransform(this._dockPos || 'bottom-right', Math.round(dx) + 'px', Math.round(dy) + 'px');
   };
 
@@ -1010,50 +1044,80 @@
     if (this._closeBtn) this._closeBtn.style.display = 'none';
     this._subVisible = false; this._updateSubPosition();
     this._hideToast();
+    this._updateHoverPause();
+    // Mobile keeps a sliver on screen permanently — there is no hover there to reveal it again.
+    this._peeking = this._isMobile();
     // Measure before arming the transition so the internal resting-box probe can't animate.
-    var exit = this._dockExitTransform();
+    var park = this._dockParkTransform(this._peeking);
     this._dock.style.transition = 'transform .35s ease, opacity .35s ease';
-    this._dock.style.transform = exit;
-    this._dock.style.opacity = '1';   // stays visible: the peeking sliver is the reopen affordance
-    this._dock.style.pointerEvents = 'none';  // hotspot above it owns the hover/click
+    this._dock.style.transform = park;
+    this._dock.style.opacity = '1';
+    this._dock.style.pointerEvents = 'none';  // the catch band above it owns hover/click
+    // Dead time: without it the pointer is still sitting where the dock was (it just clicked the
+    // close button there) and the dock would snap straight back in.
+    this._reopenArmed = false;
+    var self = this;
+    if (this._reopenArmTimer) clearTimeout(this._reopenArmTimer);
+    this._reopenArmTimer = setTimeout(function () {
+      self._reopenArmed = true;
+      self._reopenArmTimer = 0;
+    }, REOPEN_ARM_MS);
     this._mountReopenHotspot();
     this._emit('close');
+  };
+
+  // Desktop only: nudge the parked dock in far enough to be seen, without committing to reopening.
+  TourController.prototype._setPeek = function (on) {
+    if (!this._closed || this._destroyed) return;
+    if (this._isMobile()) return;          // mobile already peeks and never fully hides
+    if (this._peeking === on) return;
+    this._peeking = on;
+    this._dock.style.transition = 'transform .28s ease';
+    this._dock.style.transform = this._dockParkTransform(on);
   };
 
   TourController.prototype.reopen = function () {
     if (!this._closed || this._destroyed) return;
     this._closed = false;
+    this._peeking = false;
+    if (this._reopenArmTimer) { clearTimeout(this._reopenArmTimer); this._reopenArmTimer = 0; }
+    this._reopenArmed = false;
     this._removeReopenHotspot();
-    var pos = this._dockPos || 'bottom-right';
     this._dock.style.transition = 'transform .35s ease, opacity .35s ease';
-    this._dock.style.transform = offsetTransform(pos, '0px', '0px');
+    this._dock.style.transform = this._dockRestTransform || 'none';
     this._dock.style.opacity = '1';
     this._dock.style.pointerEvents = '';
     // _setState early-returns when the state is unchanged, so mirror its close-button rule here.
     if (this._closeBtn) {
       this._closeBtn.style.display = (this.state === 'playing' || this.mode === 'edit') ? 'none' : 'flex';
     }
+    this._updateHoverPause();
     this._emit('reopen');
   };
 
-  // Catch area spanning the union of the dock's resting footprint (padded) and the parked sliver,
-  // so the pointer triggers it both "near where it left" and directly on the visible peek. Explicit
-  // px bounds rather than an alignment call, because a large theme margin would otherwise leave the
-  // hotspot short of the viewport edge the sliver sits against.
+  // A band along the edge the dock parked against, spanning its cross-axis extent. Hovering it
+  // (once armed) peeks the dock in; clicking anywhere in it restores fully. Explicit px bounds
+  // rather than an alignment call, because a large theme margin would otherwise leave the band
+  // short of the very edge the dock is hiding behind.
   TourController.prototype._mountReopenHotspot = function () {
     if (this._reopenHotspot || !this._root) return;
     var self = this;
     var vec = this._dockExitVector();
     var r = this._dockRestingRect();
-    var left = r.left - REOPEN_PAD_PX, top = r.top - REOPEN_PAD_PX;
-    var right = r.right + REOPEN_PAD_PX, bottom = r.bottom + REOPEN_PAD_PX;
-    // Reach all the way to the edge the dock parked against.
-    if (vec.x > 0) right = window.innerWidth;
-    else if (vec.x < 0) left = 0;
-    if (vec.y > 0) bottom = window.innerHeight;
-    else if (vec.y < 0) top = 0;
-    left = Math.max(0, left); top = Math.max(0, top);
-    right = Math.min(window.innerWidth, right); bottom = Math.min(window.innerHeight, bottom);
+    var left, top, right, bottom;
+    if (vec.x) {
+      // vertical band hugging the left/right edge, as tall as the dock plus a little slack
+      top = Math.max(0, r.top - REOPEN_PAD_PX);
+      bottom = Math.min(window.innerHeight, r.bottom + REOPEN_PAD_PX);
+      if (vec.x > 0) { right = window.innerWidth; left = right - REOPEN_BAND_PX; }
+      else { left = 0; right = REOPEN_BAND_PX; }
+    } else {
+      // horizontal band hugging the top/bottom edge, as wide as the dock plus a little slack
+      left = Math.max(0, r.left - REOPEN_PAD_PX);
+      right = Math.min(window.innerWidth, r.right + REOPEN_PAD_PX);
+      if (vec.y > 0) { bottom = window.innerHeight; top = bottom - REOPEN_BAND_PX; }
+      else { top = 0; bottom = REOPEN_BAND_PX; }
+    }
 
     var hs = el('div', 'tourly-reopen-hotspot');
     Object.assign(hs.style, {
@@ -1063,9 +1127,12 @@
       height: Math.round(Math.max(0, bottom - top)) + 'px'
     });
     hs.setAttribute('aria-label', 'Reopen tour');
-    this._onReopenHover = function () { self.reopen(); };
-    hs.addEventListener('mouseenter', this._onReopenHover);
-    hs.addEventListener('click', this._onReopenHover);
+    this._onReopenEnter = function () { if (self._reopenArmed) self._setPeek(true); };
+    this._onReopenLeave = function () { self._setPeek(false); };
+    this._onReopenClick = function () { if (self._reopenArmed) self.reopen(); };
+    hs.addEventListener('mouseenter', this._onReopenEnter);
+    hs.addEventListener('mouseleave', this._onReopenLeave);
+    hs.addEventListener('click', this._onReopenClick);
     this._root.appendChild(hs);
     this._reopenHotspot = hs;
   };
@@ -1073,11 +1140,10 @@
   TourController.prototype._removeReopenHotspot = function () {
     var hs = this._reopenHotspot;
     if (!hs) return;
-    if (this._onReopenHover) {
-      hs.removeEventListener('mouseenter', this._onReopenHover);
-      hs.removeEventListener('click', this._onReopenHover);
-      this._onReopenHover = null;
-    }
+    if (this._onReopenEnter) hs.removeEventListener('mouseenter', this._onReopenEnter);
+    if (this._onReopenLeave) hs.removeEventListener('mouseleave', this._onReopenLeave);
+    if (this._onReopenClick) hs.removeEventListener('click', this._onReopenClick);
+    this._onReopenEnter = this._onReopenLeave = this._onReopenClick = null;
     if (hs.parentNode) hs.parentNode.removeChild(hs);
     this._reopenHotspot = null;
   };
@@ -1109,6 +1175,7 @@
       if (label) label.textContent = (s === 'idle') ? 'Start tour' : (s === 'ended') ? 'Replay tour' : 'Resume tour';
     }
     if (this._closeBtn && !this._closed) this._closeBtn.style.display = (playingLike || this.mode === 'edit') ? 'none' : 'flex';
+    this._updateHoverPause();
     if (!playingLike) this._hideToast();
     if (!playingLike && !this._isLivePreview()) this._resetGuidedFrame(true);
     else this._updateGuidedFrame();
@@ -2034,6 +2101,17 @@
     this._syncSubtitles(this.getTime());
   };
 
+  // Shown only while the pointer is over a live, un-parked dock. The editor has its own transport,
+  // and the start/replay button already covers the idle and ended states, so this stays out of both.
+  TourController.prototype._updateHoverPause = function () {
+    if (!this._hoverPause) return;
+    var playing = this.state === 'playing';
+    var relevant = playing || this.state === 'paused';
+    var show = this._dockHovered && relevant && !this._closed && this.mode !== 'edit';
+    this._hoverPause.textContent = playing ? '❚❚' : '▶';
+    this._hoverPause.style.opacity = show ? '1' : '0';
+  };
+
   TourController.prototype._updateCCButton = function () {
     if (!this._ccBtn) return;
     var on = this._subtitlesEnabled;
@@ -2329,6 +2407,12 @@
   TourController.prototype.destroy = function () {
     this._destroyed = true;
     this._removeReopenHotspot();
+    if (this._reopenArmTimer) { clearTimeout(this._reopenArmTimer); this._reopenArmTimer = 0; }
+    if (this._dock && this._onDockEnter) {
+      this._dock.removeEventListener('mouseenter', this._onDockEnter);
+      this._dock.removeEventListener('mouseleave', this._onDockLeave);
+      this._onDockEnter = this._onDockLeave = null;
+    }
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this._tweenRAF) cancelAnimationFrame(this._tweenRAF);
     this._clearBreakIdleTimer();
