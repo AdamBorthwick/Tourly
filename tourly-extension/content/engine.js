@@ -2409,17 +2409,39 @@
     return config;
   }
 
+  function backendHeaders() {
+    // Match the extension client: Kong requires `apikey`; PostgREST also accepts Bearer.
+    return {
+      'Content-Type': 'application/json',
+      apikey: TOURLY_BACKEND.anonKey,
+      Authorization: 'Bearer ' + TOURLY_BACKEND.anonKey
+    };
+  }
+
   function fetchAndMount(tourId, overrides) {
-    var url = TOURLY_BACKEND.url + '/rest/v1/rpc/get_tour_config';
-    fetch(url, {
+    var headers = backendHeaders();
+    var rpcUrl = TOURLY_BACKEND.url + '/rest/v1/rpc/get_tour_config';
+    // Fallback if the RPC migration isn't applied yet: filtered row read (non-enumerable when
+    // the caller already knows the tour id from the embed tag).
+    var restUrl = TOURLY_BACKEND.url + '/rest/v1/tours?id=eq.' + encodeURIComponent(tourId) + '&select=config';
+
+    function finish(config) {
+      if (!config) return;
+      doMount(applyEmbedOverrides(config, overrides));
+    }
+
+    fetch(rpcUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: TOURLY_BACKEND.anonKey },
+      headers: headers,
       body: JSON.stringify({ tour_id: tourId })
     })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (config) {
-        if (!config) return;
-        doMount(applyEmbedOverrides(config, overrides));
+      .then(function (r) {
+        if (r.ok) return r.json().then(finish);
+        return fetch(restUrl, { headers: headers })
+          .then(function (r2) { return r2.ok ? r2.json() : null; })
+          .then(function (rows) {
+            finish(rows && rows[0] && rows[0].config ? rows[0].config : null);
+          });
       })
       .catch(function () { /* offline/unreachable — silently skip, page still works */ });
   }
