@@ -10,7 +10,7 @@
 // already-pasted embed code breaks.
 
 var GH_REPO = 'AdamBorthwick/Tourly';
-var PINNED_TAG = 'v0.4.8';                      // bump + redeploy to roll an update out to every live tour
+var PINNED_TAG = 'v0.4.9';                      // bump + redeploy to roll an update out to every live tour
 var EDGE_CACHE_SECONDS = 300;               // how fast an update propagates to already-loaded tours
 
 export default {
